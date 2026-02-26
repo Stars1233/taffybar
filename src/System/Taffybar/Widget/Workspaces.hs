@@ -49,7 +49,7 @@ import qualified Control.Concurrent.MVar as MV
 import Control.Concurrent.STM.TChan (TChan)
 import Control.Exception.Enclosed (catchAny)
 import Control.Monad (foldM, forM_, guard, when)
-import Control.Monad.IO.Class (liftIO)
+import Control.Monad.IO.Class (MonadIO (..))
 import Control.Monad.Trans.Reader (ask, asks, runReaderT)
 import Data.Default (Default (..))
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
@@ -85,23 +85,26 @@ import System.Taffybar.Information.Workspaces.Hyprland
   )
 import System.Taffybar.Information.Workspaces.Model
 import System.Taffybar.Util (getPixbufFromFilePath, postGUIASync, (<|||>))
+import System.Taffybar.Widget.Generic.AutoSizeImage (ImageScaleStrategy)
 import System.Taffybar.Widget.Generic.ChannelWidget (channelWidgetNew)
-import System.Taffybar.Widget.Generic.ScalingImage (getScalingImageStrategy)
+import System.Taffybar.Widget.Generic.ScalingImage
+  ( getScalingImageStrategy,
+    scalingImageNew,
+  )
 import System.Taffybar.Widget.Util
   ( WindowIconWidget (..),
+    buildBottomLeftAlignedBox,
+    buildContentsBox,
+    buildOverlayWithPassThrough,
     computeIconStripLayout,
     handlePixbufGetterException,
+    mkWindowIconWidgetBase,
     scaledPixbufGetter,
     syncWidgetPool,
+    updateWidgetClasses,
     updateWindowIconWidgetState,
     widgetSetClassGI,
     windowStatusClassFromFlags,
-  )
-import System.Taffybar.Widget.Workspaces.Shared
-  ( WorkspaceState (..),
-    buildWorkspaceIconLabelOverlay,
-    mkWorkspaceIconWidget,
-    setWorkspaceWidgetStatusClass,
   )
 import System.Taffybar.WindowIcon
   ( getCachedIconPixBufFromEWMH,
@@ -136,6 +139,76 @@ data WorkspacesConfig = WorkspacesConfig
     onWorkspaceClick :: WorkspaceInfo -> TaffyIO (),
     onWindowClick :: WindowInfo -> TaffyIO ()
   }
+
+data WorkspaceState
+  = Active
+  | Visible
+  | Hidden
+  | Empty
+  | Urgent
+  deriving (Show, Eq)
+
+getCSSClass :: (Show s) => s -> T.Text
+getCSSClass = T.toLower . T.pack . show
+
+cssWorkspaceStates :: [T.Text]
+cssWorkspaceStates = map getCSSClass [Active, Visible, Hidden, Empty, Urgent]
+
+setWorkspaceWidgetStatusClass ::
+  (MonadIO m, Gtk.IsWidget a) => WorkspaceState -> a -> m ()
+setWorkspaceWidgetStatusClass ws widget =
+  updateWidgetClasses
+    widget
+    [getCSSClass ws]
+    cssWorkspaceStates
+
+-- | Build the common overlay layout used by workspace widgets:
+-- window icons are the base content and the workspace label is overlaid in the
+-- bottom-left corner.
+buildWorkspaceIconLabelOverlay ::
+  (MonadIO m) =>
+  Gtk.Widget ->
+  Gtk.Widget ->
+  m Gtk.Widget
+buildWorkspaceIconLabelOverlay iconsWidget labelWidget = do
+  base <- buildContentsBox iconsWidget
+  overlayLabel <- buildBottomLeftAlignedBox "overlay-box" labelWidget
+  buildOverlayWithPassThrough base [overlayLabel]
+
+mkWorkspaceIconWidget ::
+  ImageScaleStrategy ->
+  Maybe Int32 ->
+  Bool ->
+  (Int32 -> a -> IO (Maybe Gdk.Pixbuf)) ->
+  (Int32 -> IO Gdk.Pixbuf) ->
+  IO (WindowIconWidget a)
+mkWorkspaceIconWidget strategy mSize transparentOnNone getPixbufFor mkTransparent = do
+  base <- mkWindowIconWidgetBase mSize
+  let getPixbuf size = do
+        mWin <- MV.readMVar (iconWindow base)
+        case mWin of
+          Nothing ->
+            if transparentOnNone
+              then Just <$> mkTransparent size
+              else return Nothing
+          Just w -> do
+            pb <- getPixbufFor size w
+            case pb of
+              Just _ -> return pb
+              Nothing ->
+                if transparentOnNone
+                  then Just <$> mkTransparent size
+                  else return Nothing
+  (imageWidget, refreshImage) <-
+    scalingImageNew
+      strategy
+      getPixbuf
+      Gtk.OrientationHorizontal
+  _ <- widgetSetClassGI imageWidget "window-icon"
+  forM_ mSize $ \s ->
+    Gtk.widgetSetSizeRequest imageWidget (fromIntegral s) (fromIntegral s)
+  Gtk.containerAdd (iconContainer base) imageWidget
+  return base {iconImage = imageWidget, iconForceUpdate = refreshImage}
 
 data WorkspaceEntry = WorkspaceEntry
   { entryWrapper :: Gtk.Widget,
@@ -208,8 +281,8 @@ defaultWidgetBuilder cfg wsInfo = do
         labelText <- labelSetter cfg newWs
         let wsState = toCSSState cfg newWs
         liftIO $ Gtk.labelSetMarkup label (T.pack labelText)
-        liftIO $ setWorkspaceWidgetStatusClass wsState contents
-        liftIO $ setWorkspaceWidgetStatusClass wsState label
+        setWorkspaceWidgetStatusClass wsState contents
+        setWorkspaceWidgetStatusClass wsState label
         currentIcons <- liftIO $ readIORef iconsRef
         let needsIconUpdate =
               forceIcons
