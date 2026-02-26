@@ -84,7 +84,8 @@ data GraphConfig = GraphConfig
     graphDataStyles :: [GraphStyle],
     -- | The number of data points to retain for each data set (default 20)
     graphHistorySize :: Int,
-    -- | May contain Pango markup (default @Nothing@)
+    -- | Optional label rendered inside the graph area using a GTK overlay.
+    -- May contain Pango markup. (default @Nothing@)
     graphLabel :: Maybe T.Text,
     -- | The width (in pixels) of the graph widget (default 50)
     graphWidth :: Int,
@@ -316,9 +317,11 @@ graphNew cfg = liftIO $ do
     Just labelText -> do
       overlay <- Gtk.overlayNew
       label <- Gtk.labelNew Nothing
+      _ <- widgetSetClassGI label (T.pack "graph-label")
       Gtk.labelSetMarkup label labelText
       Gtk.containerAdd overlay box
       Gtk.overlayAddOverlay overlay label
+      Gtk.overlaySetOverlayPassThrough overlay label True
       Gtk.toWidget overlay
 
   Gtk.widgetShowAll widget
