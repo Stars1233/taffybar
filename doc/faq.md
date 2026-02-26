@@ -199,6 +199,39 @@ cachix push my-cache "$(readlink -f result)"
 For team use, add your cache URL/key to Nix `substituters` and
 `trusted-public-keys`.
 
+## How do I add a label inside a graph widget?
+
+Set `graphLabel` in `GraphConfig` to overlay text on top of the graph area.
+The label is rendered using a `Gtk.Overlay`, so it appears inside the graph
+rather than beside it, saving horizontal space.
+
+The label supports Pango markup for styling.
+
+```haskell
+import System.Taffybar.Widget.Generic.Graph
+import System.Taffybar.Widget.CPUMonitor (cpuMonitorNew)
+
+myCpuGraph :: MonadIO m => m GI.Gtk.Widget
+myCpuGraph =
+  cpuMonitorNew
+    defaultGraphConfig
+      { graphLabel = Just "<span size='small'>CPU</span>"
+      , graphWidth = 50
+      }
+    1.0
+    "cpu"
+```
+
+The overlay label has the CSS class `.graph-label`, so you can style it
+directly:
+
+```css
+.graph-label {
+  font-size: 8pt;
+  color: rgba(255, 255, 255, 0.7);
+}
+```
+
 ## How do I add click handling to a widget?
 
 Wrap the widget in a `Gtk.EventBox` and handle button press events:

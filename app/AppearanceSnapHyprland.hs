@@ -60,7 +60,7 @@ data Args = Args
     layoutMode :: LayoutMode
   }
 
-data LayoutMode = LayoutLegacy | LayoutLevels
+data LayoutMode = LayoutSingleRow | LayoutLevels
   deriving (Eq, Show)
 
 snapshotWatchdogTimeoutUsec :: Int
@@ -173,7 +173,7 @@ testPillBoxWidget klass w h = liftIO $ do
 buildBarConfig :: Unique -> LayoutMode -> BarConfig
 buildBarConfig barUnique mode =
   case mode of
-    LayoutLegacy ->
+    LayoutSingleRow ->
       BarConfig
         { strutConfig = baseStrutConfig 40,
           widgetSpacing = 8,
@@ -272,7 +272,7 @@ takeSnapshot mode =
         shotHeight :: Int
         shotHeight =
           case mode of
-            LayoutLegacy -> 40
+            LayoutSingleRow -> 40
             LayoutLevels -> 72
     e <-
       try (readProcess (proc "grim" ["-s", "1", "-l", "1", "-g", "0,0 1024x" ++ show shotHeight, shotPath])) ::
@@ -303,7 +303,7 @@ hasExpectedMarkers mode img =
       rightCount = countColor img rightBox
       level2Count = countColor img level2Center
    in case mode of
-        LayoutLegacy -> centerCount >= 200 && rightCount >= 50
+        LayoutSingleRow -> centerCount >= 200 && rightCount >= 50
         LayoutLevels -> centerCount >= 200 && rightCount >= 50 && level2Count >= 100
 
 countColor :: JP.Image JP.PixelRGBA8 -> JP.PixelRGBA8 -> Int
@@ -381,7 +381,7 @@ parseArgs args =
   let selectedLayoutMode =
         if "--levels" `elem` args
           then LayoutLevels
-          else LayoutLegacy
+          else LayoutSingleRow
       argsSansFlags =
         filter
           (`notElem` ["--levels"])

@@ -225,7 +225,6 @@ library
                  , System.Taffybar.Widget.Weather
                  , System.Taffybar.Widget.Windows
                  , System.Taffybar.Widget.Workspaces
-                 , System.Taffybar.Widget.Workspaces.Shared
                  , System.Taffybar.Widget.WirePlumber
                  , System.Taffybar.Widget.Wlsunset
                  , System.Taffybar.Widget.WttrIn

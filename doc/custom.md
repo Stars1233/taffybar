@@ -90,4 +90,4 @@ Examples:
 Taffybar also applies shared classes for common internals:
 - `.icon-label`, `.icon`, `.label`
 - `.polling-label`, `.polling-label-container`, `.polling-label-text`
-- `.graph`, `.graph-canvas`
+- `.graph`, `.graph-canvas`, `.graph-label`
