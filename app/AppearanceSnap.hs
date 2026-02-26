@@ -87,7 +87,7 @@ data Args = Args
     expectedTopStrut :: Maybe Int
   }
 
-data LayoutMode = LayoutLegacy | LayoutLevels | LayoutWindowsTitleStress
+data LayoutMode = LayoutSingleRow | LayoutLevels | LayoutWindowsTitleStress
   deriving (Eq, Show)
 
 snapshotWatchdogTimeoutUsec :: Int
@@ -201,7 +201,7 @@ runUnderWm wmProc outPath cssPath mode mExpectedTopStrut = do
 buildBarConfig :: TaffyIO Gtk.Widget -> Unique -> LayoutMode -> BarConfig
 buildBarConfig workspaceWidget barUnique mode =
   case mode of
-    LayoutLegacy ->
+    LayoutSingleRow ->
       BarConfig
         { strutConfig = baseStrutConfig 40,
           widgetSpacing = 8,
@@ -558,7 +558,7 @@ parseArgs args =
   let selectedLayoutMode
         | "--windows-title-stress" `elem` args = LayoutWindowsTitleStress
         | "--levels" `elem` args = LayoutLevels
-        | otherwise = LayoutLegacy
+        | otherwise = LayoutSingleRow
       (mExpectedTopStrut, argsSansTopStrutFlag) = parseTopStrutFlag args
       argsSansFlags =
         filter

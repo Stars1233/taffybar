@@ -33,7 +33,7 @@ spec = do
   aroundAll withIntegrationEnv $ do
     it "renders a bar under an EWMH window manager" $ \env -> do
       goldenFile <- makeAbsolute "test/data/appearance-ewmh-bar.png"
-      actualPng <- renderBarScreenshot env LegacyLayout
+      actualPng <- renderBarScreenshot env SingleRowLayout
       assertGolden "appearance" goldenFile actualPng
 
     it "renders a two-level bar under an EWMH window manager" $ \env -> do
@@ -42,7 +42,7 @@ spec = do
       assertGolden "appearance-levels" goldenFile actualPng
 
     it "renders the workspaces widget under an EWMH window manager" $ \env -> do
-      actualPng <- renderBarScreenshot env LegacyLayout
+      actualPng <- renderBarScreenshot env SingleRowLayout
       assertPngLooksRendered "ewmh-workspaces" actualPng
 
     it "keeps configured bar height when the windows title has oversized glyph metrics" $ \env -> do
@@ -55,7 +55,7 @@ spec = do
         actualPng <-
           renderBarScreenshotWithArgs
             env
-            LegacyLayout
+            SingleRowLayout
             ["--expect-top-strut", "80"]
         assertPngLooksRendered "ewmh-hidpi-strut" actualPng
 
@@ -64,7 +64,7 @@ spec = do
     unless available $
       pendingWith
         "Hyprland integration environment unavailable (needs WAYLAND_DISPLAY, HYPRLAND_INSTANCE_SIGNATURE and grim)"
-    actualPng <- renderHyprlandScreenshot LegacyLayout
+    actualPng <- renderHyprlandScreenshot SingleRowLayout
     assertPngLooksRendered "hyprland-workspaces" actualPng
 
 assertGolden :: String -> FilePath -> BL.ByteString -> IO ()
@@ -127,7 +127,7 @@ withIntegrationEnv action =
               ]
             $ action (Env {envTmpDir = tmp})
 
-data LayoutKind = LegacyLayout | LevelsLayout | WindowsTitleStressLayout
+data LayoutKind = SingleRowLayout | LevelsLayout | WindowsTitleStressLayout
 
 renderBarScreenshot :: Env -> LayoutKind -> IO BL.ByteString
 renderBarScreenshot env layout =
@@ -146,7 +146,7 @@ renderBarScreenshotWithArgs Env {envTmpDir = tmp} layout extraArgs = do
 
   let levelArgs =
         case layout of
-          LegacyLayout -> []
+          SingleRowLayout -> []
           LevelsLayout -> ["--levels"]
           WindowsTitleStressLayout -> ["--windows-title-stress"]
       pc =
@@ -178,7 +178,7 @@ renderHyprlandScreenshot layout =
     outPath <- makeAbsolute (tmp </> "appearance-hyprland-actual.png")
     let levelArgs =
           case layout of
-            LegacyLayout -> []
+            SingleRowLayout -> []
             LevelsLayout -> ["--levels"]
             WindowsTitleStressLayout -> []
         pc =
