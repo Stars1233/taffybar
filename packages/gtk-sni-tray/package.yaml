@@ -18,6 +18,7 @@ description:         Please see the README on Github at <https://github.com/taff
 library:
   exposed-modules:
     - StatusNotifier.Icon.Pixbuf
+    - StatusNotifier.Tray.ContextMap
     - StatusNotifier.TransparentWindow
     - StatusNotifier.Tray
   dependencies:
@@ -74,3 +75,14 @@ executables:
       - status-notifier-item
       - text
       - unix
+
+tests:
+  gtk-sni-tray-test:
+    main: Main.hs
+    source-dirs:
+      - test
+    dependencies:
+      - base
+      - containers
+      - gtk-sni-tray
+      - hspec < 3
