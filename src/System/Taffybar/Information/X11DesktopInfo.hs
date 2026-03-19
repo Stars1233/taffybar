@@ -54,6 +54,7 @@ module System.Taffybar.Information.X11DesktopInfo
     -- ** Getters
     isWindowUrgent,
     getPrimaryOutputNumber,
+    xmonadVisibleWorkspaces,
     getVisibleTags,
 
     -- ** Operations
@@ -206,13 +207,18 @@ isWindowUrgent window = do
   hints <- fetchWindowHints window
   return $ testBit (wmh_flags hints) urgencyHintBit
 
+-- | XMonad-specific root-window property updated by @pagerHints@ with the set
+-- of visible workspace names.
+xmonadVisibleWorkspaces :: String
+xmonadVisibleWorkspaces = "_XMONAD_VISIBLE_WORKSPACES"
+
 -- | Retrieve the value of the special @_XMONAD_VISIBLE_WORKSPACES@
 -- hint set by the 'XMonad.Hooks.TaffybarPagerHints.pagerHints' hook
 -- provided by [xmonad-contrib]("XMonad.Hooks.TaffybarPagerHints")
 -- (see module documentation for instructions on how to do this), or
 -- an empty list of strings if the @pagerHints@ hook is not available.
 getVisibleTags :: X11Property [String]
-getVisibleTags = readAsListOfString Nothing "_XMONAD_VISIBLE_WORKSPACES"
+getVisibleTags = readAsListOfString Nothing xmonadVisibleWorkspaces
 
 -- | Return the 'Atom' with the given name.
 getAtom :: String -> X11Property Atom

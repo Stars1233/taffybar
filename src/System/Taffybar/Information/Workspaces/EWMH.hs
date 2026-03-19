@@ -70,6 +70,7 @@ import System.Taffybar.Information.EWMHDesktopInfo
 import System.Taffybar.Information.SafeX11 (safeGetGeometry)
 import System.Taffybar.Information.Workspaces.Model
 import System.Taffybar.Information.X11DesktopInfo (X11Property, X11Window, getDisplay)
+import qualified System.Taffybar.Information.X11DesktopInfo as X11
 
 data EWMHWorkspaceProviderConfig = EWMHWorkspaceProviderConfig
   { workspaceSnapshotGetter :: TaffyIO (Bool, [WorkspaceInfo]),
@@ -81,7 +82,8 @@ defaultEWMHWorkspaceProviderConfig :: EWMHWorkspaceProviderConfig
 defaultEWMHWorkspaceProviderConfig =
   EWMHWorkspaceProviderConfig
     { workspaceSnapshotGetter = buildEWMHWorkspaceSnapshot,
-      workspaceUpdateEvents = allEWMHProperties \\ [ewmhWMIcon],
+      workspaceUpdateEvents =
+        X11.xmonadVisibleWorkspaces : (allEWMHProperties \\ [ewmhWMIcon, X11.xmonadVisibleWorkspaces]),
       workspaceUpdateRateLimitMicroseconds = 100000
     }
 
