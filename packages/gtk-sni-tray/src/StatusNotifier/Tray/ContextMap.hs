@@ -1,6 +1,10 @@
 module StatusNotifier.Tray.ContextMap
   ( ContextEntry (..),
+    ContextMap,
+    Reservation,
+    cancelReservation,
     deleteContext,
+    empty,
     lookupReadyContext,
     readyContexts,
     reserveContext,
@@ -11,30 +15,80 @@ where
 import Control.Monad ((>=>))
 import qualified Data.Map.Strict as Map
 
+newtype Reservation = Reservation Int
+  deriving (Eq, Ord, Show)
+
 data ContextEntry a
-  = ContextPending
+  = ContextPending Reservation
   | ContextReady a
   deriving (Eq, Show)
 
-reserveContext :: (Ord k) => k -> Map.Map k (ContextEntry a) -> (Bool, Map.Map k (ContextEntry a))
-reserveContext key contexts
-  | Map.member key contexts = (False, contexts)
-  | otherwise = (True, Map.insert key ContextPending contexts)
+data ContextMap k a = ContextMap
+  { nextReservation :: !Int,
+    contextEntries :: Map.Map k (ContextEntry a)
+  }
+  deriving (Eq, Show)
 
-setReadyContext :: (Ord k) => k -> a -> Map.Map k (ContextEntry a) -> Map.Map k (ContextEntry a)
-setReadyContext key value = Map.insert key (ContextReady value)
+empty :: ContextMap k a
+empty = ContextMap {nextReservation = 0, contextEntries = Map.empty}
 
-lookupReadyContext :: (Ord k) => k -> Map.Map k (ContextEntry a) -> Maybe a
-lookupReadyContext key = Map.lookup key >=> readyContext
+reserveContext ::
+  (Ord k) =>
+  k ->
+  ContextMap k a ->
+  (Maybe Reservation, ContextMap k a)
+reserveContext key contexts@(ContextMap {nextReservation = nextReservation', contextEntries = contextEntries'})
+  | Map.member key contextEntries' = (Nothing, contexts)
+  | otherwise =
+      let reservation = Reservation nextReservation'
+       in ( Just reservation,
+            ContextMap
+              { nextReservation = nextReservation' + 1,
+                contextEntries = Map.insert key (ContextPending reservation) contextEntries'
+              }
+          )
+
+setReadyContext ::
+  (Ord k) =>
+  k ->
+  Reservation ->
+  a ->
+  ContextMap k a ->
+  (Bool, ContextMap k a)
+setReadyContext key reservation value contexts@(ContextMap {contextEntries = contextEntries'})
+  | isActiveReservation key reservation contexts =
+      (True, contexts {contextEntries = Map.insert key (ContextReady value) contextEntries'})
+  | otherwise = (False, contexts)
+
+lookupReadyContext :: (Ord k) => k -> ContextMap k a -> Maybe a
+lookupReadyContext key = Map.lookup key . contextEntries >=> readyContext
   where
-    readyContext ContextPending = Nothing
+    readyContext (ContextPending _) = Nothing
     readyContext (ContextReady value) = Just value
 
-readyContexts :: Map.Map k (ContextEntry a) -> Map.Map k a
-readyContexts = Map.mapMaybe readyContext
+readyContexts :: ContextMap k a -> Map.Map k a
+readyContexts = Map.mapMaybe readyContext . contextEntries
   where
-    readyContext ContextPending = Nothing
+    readyContext (ContextPending _) = Nothing
     readyContext (ContextReady value) = Just value
 
-deleteContext :: (Ord k) => k -> Map.Map k (ContextEntry a) -> Map.Map k (ContextEntry a)
-deleteContext = Map.delete
+deleteContext :: (Ord k) => k -> ContextMap k a -> ContextMap k a
+deleteContext key contexts@(ContextMap {contextEntries = contextEntries'}) =
+  contexts {contextEntries = Map.delete key contextEntries'}
+
+cancelReservation ::
+  (Ord k) =>
+  k ->
+  Reservation ->
+  ContextMap k a ->
+  ContextMap k a
+cancelReservation key reservation contexts
+  | isActiveReservation key reservation contexts = deleteContext key contexts
+  | otherwise = contexts
+
+isActiveReservation :: (Ord k) => k -> Reservation -> ContextMap k a -> Bool
+isActiveReservation key reservation =
+  maybe False matchesPending . Map.lookup key . contextEntries
+  where
+    matchesPending (ContextPending reservation') = reservation' == reservation
+    matchesPending (ContextReady _) = False

@@ -509,7 +509,7 @@ buildTray
         _ -> Gtk.widgetSetValign trayBox Gtk.AlignCenter
       Gtk.widgetGetStyleContext trayBox
         >>= flip Gtk.styleContextAddClass "tray-box"
-      contextMap <- MV.newMVar Map.empty
+      contextMap <- MV.newMVar ContextMap.empty
 
       let getContext name = ContextMap.lookupReadyContext name <$> MV.readMVar contextMap
           showInfo info = show info {iconPixmaps = []}
@@ -579,267 +579,279 @@ buildTray
                 itemServicePath = servicePath
               } =
               do
-                shouldCreateWidget <- MV.modifyMVar contextMap $ \contexts ->
+                reservation <- MV.modifyMVar contextMap $ \contexts ->
                   let (reserved, newContexts) =
                         ContextMap.reserveContext serviceName contexts
                    in pure (newContexts, reserved)
-                when shouldCreateWidget
-                  $ flip
-                    onException
-                    ( MV.modifyMVar_ contextMap $
-                        pure . ContextMap.deleteContext serviceName
-                    )
-                  $ do
-                    let serviceNameStr = (coerce serviceName :: String)
-                        servicePathStr = coerce servicePath :: String
-                        logText =
-                          printf
-                            "Adding widget for %s - %s"
-                            serviceNameStr
-                            servicePathStr
-
-                    trayLogger INFO logText
-
-                    eventBox <- Gtk.eventBoxNew
-                    Gtk.widgetAddEvents eventBox [Gdk.EventMaskScrollMask]
-                    Gtk.widgetGetStyleContext eventBox
-                      >>= flip Gtk.styleContextAddClass "tray-icon-button"
-
-                    infoRef <- newIORef info
-                    (iconWidget, setIcon) <- case imageSize of
-                      Expand -> do
-                        drawArea <- Gtk.drawingAreaNew
-                        Gtk.widgetGetStyleContext drawArea
-                          >>= flip Gtk.styleContextAddClass "tray-icon-image"
-                        iconWidget <- Gtk.toWidget drawArea
-                        let getPixbufForSize size = do
-                              currentInfo <- readIORef infoRef
-                              pixBuf0 <- getScaledPixBufFromInfo size currentInfo
-                              pixBuf <- applyTransform iconWidget pixBuf0
-                              when (isNothing pixBuf) $
-                                trayLogger WARNING $
-                                  printf "Got null pixbuf for info %s" (showInfo currentInfo)
-                              return pixBuf
-                        refresh <- autoFillImage drawArea getPixbufForSize orientation
-                        let setIconFromInfo iconInfo = do
-                              writeIORef infoRef iconInfo
-                              refresh
-                        setIconFromInfo info
-                        return (iconWidget, setIconFromInfo)
-                      TrayImageSize size -> do
-                        image <- Gtk.imageNew
-                        Gtk.widgetGetStyleContext image
-                          >>= flip Gtk.styleContextAddClass "tray-icon-image"
-                        iconWidget <- Gtk.toWidget image
-                        let setIconFromInfo iconInfo = do
-                              writeIORef infoRef iconInfo
-                              pixBuf0 <- getScaledPixBufFromInfo size iconInfo
-                              pixBuf <- applyTransform iconWidget pixBuf0
-                              when (isNothing pixBuf) $
-                                trayLogger WARNING $
-                                  printf "Got null pixbuf for info %s" $
-                                    showInfo iconInfo
-                              Gtk.imageSetFromPixbuf image pixBuf
-                        setIconFromInfo info
-                        return (iconWidget, setIconFromInfo)
-
-                    Gtk.containerAdd eventBox iconWidget
-                    setTooltipText eventBox info
-
-                    let context =
-                          ItemContext
-                            { contextName = serviceName,
-                              contextMenuPath = pathForMenu,
-                              contextIconWidget = iconWidget,
-                              contextSetIcon = setIcon,
-                              contextButton = eventBox
-                            }
-
-                        popupGtkMenu gtkMenu mEvent = do
-                          Gtk.menuAttachToWidget gtkMenu eventBox Nothing
-                          _ <- Gtk.onWidgetHide gtkMenu $
-                            void $
-                              GLib.idleAdd GLib.PRIORITY_LOW $ do
-                                Gtk.widgetDestroy gtkMenu
-                                return False
-                          Gtk.widgetShowAll gtkMenu
-                          Gtk.menuPopupAtPointer gtkMenu mEvent
-
-                    _ <- Gtk.onWidgetButtonPressEvent eventBox $ \event -> do
-                      -- Capture the current event as a Gdk.Event before any
-                      -- blocking calls (DBus etc.) so menuPopupAtPointer can
-                      -- use its coordinates for popup positioning.
-                      currentEvent <- Gtk.getCurrentEvent
-                      currentInfo <- getInfo info serviceName
-                      mouseButton <- Gdk.getEventButtonButton event
-                      x <- round <$> Gdk.getEventButtonXRoot event
-                      y <- round <$> Gdk.getEventButtonYRoot event
-                      modifiers <- Gdk.getEventButtonState event
-                      let defaultAction = case mouseButton of
-                            1 -> if itemIsMenu currentInfo then PopupMenu else leftClickAction
-                            2 -> middleClickAction
-                            _ -> rightClickAction
-                      clickDecision <-
-                        maybe
-                          (pure UseDefaultClickAction)
-                          ( \hook ->
-                              hook
-                                TrayClickContext
-                                  { trayClickItemInfo = currentInfo,
-                                    trayClickButton = mouseButton,
-                                    trayClickXRoot = x,
-                                    trayClickYRoot = y,
-                                    trayClickModifiers = modifiers,
-                                    trayClickDefaultAction = defaultAction
-                                  }
-                          )
-                          mClickHook
-                      let mAction = case clickDecision of
-                            UseDefaultClickAction -> Just defaultAction
-                            OverrideClickAction action -> Just action
-                            ConsumeClick -> Nothing
-                      let logActionError actionName e =
-                            trayLogger WARNING $
+                forM_ reservation $
+                  \reservation ->
+                    flip
+                      onException
+                      ( MV.modifyMVar_ contextMap $
+                          pure . ContextMap.cancelReservation serviceName reservation
+                      )
+                      $ do
+                        let serviceNameStr = (coerce serviceName :: String)
+                            servicePathStr = coerce servicePath :: String
+                            logText =
                               printf
-                                "%s failed for %s: %s"
-                                (actionName :: String)
-                                (coerce serviceName :: String)
-                                (show e)
-                          runAsync actionName action =
-                            void $
-                              forkIO $
-                                catchAny action (logActionError actionName)
-                          buildAndPopupHaskellMenu p =
-                            runAsync "PopupMenu" $ do
-                              _ <- DBusMenu.aboutToShow client serviceName p 0
-                              (_, layout) <-
-                                DBusMenu.getLayout
-                                  client
-                                  serviceName
-                                  p
-                                  0
-                                  (-1)
-                                  dbusMenuLayoutPropNames
-                              void $
-                                GLib.idleAdd GLib.PRIORITY_DEFAULT_IDLE $ do
-                                  gtkMenu <- Gtk.menuNew
-                                  DBusMenu.populateGtkMenu client serviceName p gtkMenu layout
-                                  popupGtkMenu gtkMenu currentEvent
-                                  return False
-                      traverse_
-                        ( \action -> case action of
-                            Activate ->
-                              runAsync "Activate" $
+                                "Adding widget for %s - %s"
+                                serviceNameStr
+                                servicePathStr
+
+                        trayLogger INFO logText
+
+                        eventBox <- Gtk.eventBoxNew
+                        Gtk.widgetAddEvents eventBox [Gdk.EventMaskScrollMask]
+                        Gtk.widgetGetStyleContext eventBox
+                          >>= flip Gtk.styleContextAddClass "tray-icon-button"
+
+                        infoRef <- newIORef info
+                        (iconWidget, setIcon) <- case imageSize of
+                          Expand -> do
+                            drawArea <- Gtk.drawingAreaNew
+                            Gtk.widgetGetStyleContext drawArea
+                              >>= flip Gtk.styleContextAddClass "tray-icon-image"
+                            iconWidget <- Gtk.toWidget drawArea
+                            let getPixbufForSize size = do
+                                  currentInfo <- readIORef infoRef
+                                  pixBuf0 <- getScaledPixBufFromInfo size currentInfo
+                                  pixBuf <- applyTransform iconWidget pixBuf0
+                                  when (isNothing pixBuf) $
+                                    trayLogger WARNING $
+                                      printf "Got null pixbuf for info %s" (showInfo currentInfo)
+                                  return pixBuf
+                            refresh <- autoFillImage drawArea getPixbufForSize orientation
+                            let setIconFromInfo iconInfo = do
+                                  writeIORef infoRef iconInfo
+                                  refresh
+                            setIconFromInfo info
+                            return (iconWidget, setIconFromInfo)
+                          TrayImageSize size -> do
+                            image <- Gtk.imageNew
+                            Gtk.widgetGetStyleContext image
+                              >>= flip Gtk.styleContextAddClass "tray-icon-image"
+                            iconWidget <- Gtk.toWidget image
+                            let setIconFromInfo iconInfo = do
+                                  writeIORef infoRef iconInfo
+                                  pixBuf0 <- getScaledPixBufFromInfo size iconInfo
+                                  pixBuf <- applyTransform iconWidget pixBuf0
+                                  when (isNothing pixBuf) $
+                                    trayLogger WARNING $
+                                      printf "Got null pixbuf for info %s" $
+                                        showInfo iconInfo
+                                  Gtk.imageSetFromPixbuf image pixBuf
+                            setIconFromInfo info
+                            return (iconWidget, setIconFromInfo)
+
+                        Gtk.containerAdd eventBox iconWidget
+                        setTooltipText eventBox info
+
+                        let context =
+                              ItemContext
+                                { contextName = serviceName,
+                                  contextMenuPath = pathForMenu,
+                                  contextIconWidget = iconWidget,
+                                  contextSetIcon = setIcon,
+                                  contextButton = eventBox
+                                }
+
+                            popupGtkMenu gtkMenu mEvent = do
+                              Gtk.menuAttachToWidget gtkMenu eventBox Nothing
+                              _ <- Gtk.onWidgetHide gtkMenu $
                                 void $
-                                  IC.activate client serviceName servicePath x y
-                            SecondaryActivate ->
-                              runAsync "SecondaryActivate" $
-                                void $
-                                  IC.secondaryActivate
-                                    client
-                                    serviceName
-                                    servicePath
-                                    x
-                                    y
-                            PopupMenu -> do
-                              let menuPath' = menuPath currentInfo
-                              traverse_
-                                ( \p ->
-                                    case menuBackend of
-                                      LibDBusMenu ->
-                                        catchAny
-                                          ( do
-                                              let sn = T.pack (coerce serviceName :: String)
-                                                  mp = T.pack (coerce p :: String)
-                                              gtkMenu <- DM.menuNew sn mp >>= unsafeCastTo Gtk.Menu
-                                              Gtk.menuAttachToWidget gtkMenu eventBox Nothing
-                                              _ <- Gtk.onWidgetHide gtkMenu $
-                                                void $
-                                                  GLib.idleAdd GLib.PRIORITY_DEFAULT_IDLE $ do
-                                                    Gtk.widgetDestroy gtkMenu
-                                                    return False
-                                              -- libdbusmenu-gtk fetches the menu layout
-                                              -- asynchronously; showing before the root menuitem
-                                              -- is available triggers assertion failures. Defer
-                                              -- the popup until the menu is populated.
-                                              attemptsRef <- newIORef (0 :: Int)
-                                              _ <- GLib.timeoutAdd GLib.PRIORITY_DEFAULT 50 $ do
-                                                n <- readIORef attemptsRef
-                                                if n >= 100
-                                                  then do
-                                                    Gtk.widgetDestroy gtkMenu
-                                                    return False
-                                                  else do
-                                                    writeIORef attemptsRef (n + 1)
-                                                    children <- Gtk.containerGetChildren gtkMenu
-                                                    if null children
-                                                      then return True
-                                                      else do
-                                                        Gtk.widgetShowAll gtkMenu
-                                                        -- libdbusmenu is populated asynchronously, so we popup later via a
-                                                        -- timeout. On Wayland, popups generally need the original trigger
-                                                        -- event; use menuPopupAtWidget anchored to the EventBox to avoid
-                                                        -- "no trigger event" and invalid rect_window assertions.
-                                                        -- Anchor to the actual icon widget so the popup aligns with the
-                                                        -- visible image, not the full EventBox allocation.
-                                                        Gtk.menuPopupAtWidget
-                                                          gtkMenu
-                                                          iconWidget
-                                                          GravitySouth
-                                                          GravityNorth
-                                                          currentEvent
-                                                        return False
-                                              return ()
-                                          )
-                                          (logActionError "PopupMenu")
-                                      HaskellDBusMenu ->
-                                        buildAndPopupHaskellMenu p
-                                )
-                                menuPath'
-                        )
-                        mAction
-                      return False
-                    _ <- Gtk.onWidgetScrollEvent eventBox $ \event -> do
-                      direction <- getEventScrollDirection event
-                      let direction' = case direction of
-                            ScrollDirectionUp -> Just "vertical"
-                            ScrollDirectionDown -> Just "vertical"
-                            ScrollDirectionLeft -> Just "horizontal"
-                            ScrollDirectionRight -> Just "horizontal"
-                            _ -> Nothing
-                          delta = case direction of
-                            ScrollDirectionUp -> -1
-                            ScrollDirectionDown -> 1
-                            ScrollDirectionLeft -> -1
-                            ScrollDirectionRight -> 1
-                            _ -> 0
-                      traverse_
-                        ( \d ->
-                            catchAny
-                              (void $ IC.scroll client serviceName servicePath delta d)
-                              ( \e ->
-                                  trayLogger WARNING $
-                                    printf
-                                      "Scroll failed for %s: %s"
-                                      (coerce serviceName :: String)
-                                      (show e)
+                                  GLib.idleAdd GLib.PRIORITY_LOW $ do
+                                    Gtk.widgetDestroy gtkMenu
+                                    return False
+                              Gtk.widgetShowAll gtkMenu
+                              Gtk.menuPopupAtPointer gtkMenu mEvent
+
+                        _ <- Gtk.onWidgetButtonPressEvent eventBox $ \event -> do
+                          -- Capture the current event as a Gdk.Event before any
+                          -- blocking calls (DBus etc.) so menuPopupAtPointer can
+                          -- use its coordinates for popup positioning.
+                          currentEvent <- Gtk.getCurrentEvent
+                          currentInfo <- getInfo info serviceName
+                          mouseButton <- Gdk.getEventButtonButton event
+                          x <- round <$> Gdk.getEventButtonXRoot event
+                          y <- round <$> Gdk.getEventButtonYRoot event
+                          modifiers <- Gdk.getEventButtonState event
+                          let defaultAction = case mouseButton of
+                                1 -> if itemIsMenu currentInfo then PopupMenu else leftClickAction
+                                2 -> middleClickAction
+                                _ -> rightClickAction
+                          clickDecision <-
+                            maybe
+                              (pure UseDefaultClickAction)
+                              ( \hook ->
+                                  hook
+                                    TrayClickContext
+                                      { trayClickItemInfo = currentInfo,
+                                        trayClickButton = mouseButton,
+                                        trayClickXRoot = x,
+                                        trayClickYRoot = y,
+                                        trayClickModifiers = modifiers,
+                                        trayClickDefaultAction = defaultAction
+                                      }
                               )
-                        )
-                        direction'
-                      return False
+                              mClickHook
+                          let mAction = case clickDecision of
+                                UseDefaultClickAction -> Just defaultAction
+                                OverrideClickAction action -> Just action
+                                ConsumeClick -> Nothing
+                          let logActionError actionName e =
+                                trayLogger WARNING $
+                                  printf
+                                    "%s failed for %s: %s"
+                                    (actionName :: String)
+                                    (coerce serviceName :: String)
+                                    (show e)
+                              runAsync actionName action =
+                                void $
+                                  forkIO $
+                                    catchAny action (logActionError actionName)
+                              buildAndPopupHaskellMenu p =
+                                runAsync "PopupMenu" $ do
+                                  _ <- DBusMenu.aboutToShow client serviceName p 0
+                                  (_, layout) <-
+                                    DBusMenu.getLayout
+                                      client
+                                      serviceName
+                                      p
+                                      0
+                                      (-1)
+                                      dbusMenuLayoutPropNames
+                                  void $
+                                    GLib.idleAdd GLib.PRIORITY_DEFAULT_IDLE $ do
+                                      gtkMenu <- Gtk.menuNew
+                                      DBusMenu.populateGtkMenu client serviceName p gtkMenu layout
+                                      popupGtkMenu gtkMenu currentEvent
+                                      return False
+                          traverse_
+                            ( \action -> case action of
+                                Activate ->
+                                  runAsync "Activate" $
+                                    void $
+                                      IC.activate client serviceName servicePath x y
+                                SecondaryActivate ->
+                                  runAsync "SecondaryActivate" $
+                                    void $
+                                      IC.secondaryActivate
+                                        client
+                                        serviceName
+                                        servicePath
+                                        x
+                                        y
+                                PopupMenu -> do
+                                  let menuPath' = menuPath currentInfo
+                                  traverse_
+                                    ( \p ->
+                                        case menuBackend of
+                                          LibDBusMenu ->
+                                            catchAny
+                                              ( do
+                                                  let sn = T.pack (coerce serviceName :: String)
+                                                      mp = T.pack (coerce p :: String)
+                                                  gtkMenu <- DM.menuNew sn mp >>= unsafeCastTo Gtk.Menu
+                                                  Gtk.menuAttachToWidget gtkMenu eventBox Nothing
+                                                  _ <- Gtk.onWidgetHide gtkMenu $
+                                                    void $
+                                                      GLib.idleAdd GLib.PRIORITY_DEFAULT_IDLE $ do
+                                                        Gtk.widgetDestroy gtkMenu
+                                                        return False
+                                                  -- libdbusmenu-gtk fetches the menu layout
+                                                  -- asynchronously; showing before the root menuitem
+                                                  -- is available triggers assertion failures. Defer
+                                                  -- the popup until the menu is populated.
+                                                  attemptsRef <- newIORef (0 :: Int)
+                                                  _ <- GLib.timeoutAdd GLib.PRIORITY_DEFAULT 50 $ do
+                                                    n <- readIORef attemptsRef
+                                                    if n >= 100
+                                                      then do
+                                                        Gtk.widgetDestroy gtkMenu
+                                                        return False
+                                                      else do
+                                                        writeIORef attemptsRef (n + 1)
+                                                        children <- Gtk.containerGetChildren gtkMenu
+                                                        if null children
+                                                          then return True
+                                                          else do
+                                                            Gtk.widgetShowAll gtkMenu
+                                                            -- libdbusmenu is populated asynchronously, so we popup later via a
+                                                            -- timeout. On Wayland, popups generally need the original trigger
+                                                            -- event; use menuPopupAtWidget anchored to the EventBox to avoid
+                                                            -- "no trigger event" and invalid rect_window assertions.
+                                                            -- Anchor to the actual icon widget so the popup aligns with the
+                                                            -- visible image, not the full EventBox allocation.
+                                                            Gtk.menuPopupAtWidget
+                                                              gtkMenu
+                                                              iconWidget
+                                                              GravitySouth
+                                                              GravityNorth
+                                                              currentEvent
+                                                            return False
+                                                  return ()
+                                              )
+                                              (logActionError "PopupMenu")
+                                          HaskellDBusMenu ->
+                                            buildAndPopupHaskellMenu p
+                                    )
+                                    menuPath'
+                            )
+                            mAction
+                          return False
+                        _ <- Gtk.onWidgetScrollEvent eventBox $ \event -> do
+                          direction <- getEventScrollDirection event
+                          let direction' = case direction of
+                                ScrollDirectionUp -> Just "vertical"
+                                ScrollDirectionDown -> Just "vertical"
+                                ScrollDirectionLeft -> Just "horizontal"
+                                ScrollDirectionRight -> Just "horizontal"
+                                _ -> Nothing
+                              delta = case direction of
+                                ScrollDirectionUp -> -1
+                                ScrollDirectionDown -> 1
+                                ScrollDirectionLeft -> -1
+                                ScrollDirectionRight -> 1
+                                _ -> 0
+                          traverse_
+                            ( \d ->
+                                catchAny
+                                  (void $ IC.scroll client serviceName servicePath delta d)
+                                  ( \e ->
+                                      trayLogger WARNING $
+                                        printf
+                                          "Scroll failed for %s: %s"
+                                          (coerce serviceName :: String)
+                                          (show e)
+                                  )
+                            )
+                            direction'
+                          return False
 
-                    MV.modifyMVar_ contextMap $
-                      pure . ContextMap.setReadyContext serviceName context
+                        didFinalize <- MV.modifyMVar contextMap $ \contexts ->
+                          let (finalized, newContexts) =
+                                ContextMap.setReadyContext serviceName reservation context contexts
+                           in pure (newContexts, finalized)
 
-                    let packFn =
-                          case alignment of
-                            End -> Gtk.boxPackEnd
-                            _ -> Gtk.boxPackStart
+                        if didFinalize
+                          then do
+                            let packFn =
+                                  case alignment of
+                                    End -> Gtk.boxPackEnd
+                                    _ -> Gtk.boxPackStart
 
-                    packFn trayBox eventBox shouldExpand True 0
-                    Gtk.widgetShow iconWidget
-                    when showNewIconsImmediately $
-                      Gtk.widgetShow eventBox
+                            packFn trayBox eventBox shouldExpand True 0
+                            Gtk.widgetShow iconWidget
+                            when showNewIconsImmediately $
+                              Gtk.widgetShow eventBox
+                          else do
+                            trayLogger DEBUG $
+                              printf
+                                "Dropping stale tray widget for %s - %s because its reservation was invalidated."
+                                serviceNameStr
+                                servicePathStr
+                            Gtk.widgetDestroy eventBox
           updateHandler ItemAdded ItemInfo {itemServiceName = serviceName} =
             trayLogger DEBUG $
               printf
@@ -854,7 +866,7 @@ buildTray
               removeWidget Nothing =
                 trayLogger DEBUG $
                   printf
-                    "Ignoring tray remove for %s with no realized widget."
+                    "Removed tray context for %s before widget realization."
                     (coerce name :: String)
               removeWidget (Just ItemContext {contextButton = widgetToRemove}) =
                 Gtk.containerRemove trayBox widgetToRemove

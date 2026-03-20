@@ -31,6 +31,7 @@ import Data.Aeson.Types (Parser, parseMaybe)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
 import Data.Char (isAlphaNum, isDigit, toLower)
+import Data.Foldable (traverse_)
 import Data.IORef
 import Data.Int (Int32)
 import Data.List (isSuffixOf, nub, sortOn, stripPrefix)
@@ -772,6 +773,7 @@ sniTrayPrioritizedCollapsibleNewFromHostParams PrioritizedCollapsibleSNITrayPara
     rebuildTrayRef <- newIORef (return ())
     rebuildInProgressRef <- newIORef False
     pendingRebuildRef <- newIORef False
+    updateHandlerRef <- newIORef Nothing
 
     outer <- Gtk.boxNew trayOrientation' 0
     _ <- widgetSetClassGI outer "sni-tray-collapsible"
@@ -913,6 +915,43 @@ sniTrayPrioritizedCollapsibleNewFromHostParams PrioritizedCollapsibleSNITrayPara
             Nothing -> return 0
             Just tray -> refreshTray tray
 
+        queueRefresh updateType _ =
+          void $
+            Gdk.threadsAddIdle GLib.PRIORITY_DEFAULT $
+              do
+                rebuildInProgress <- readIORef rebuildInProgressRef
+                if rebuildInProgress
+                  then writeIORef pendingRebuildRef True
+                  else case updateType of
+                    H.ItemAdded -> do
+                      infoMap <- H.itemInfoMap host
+                      knownItemIdentities <- readIORef knownItemIdentitiesRef
+                      let currentItemIdentities =
+                            sortOn id (map itemStableIdentity (M.elems infoMap))
+                      if currentItemIdentities /= knownItemIdentities
+                        then do
+                          join (readIORef rebuildTrayRef)
+                        else void refresh
+                    H.ItemRemoved -> do
+                      infoMap <- H.itemInfoMap host
+                      knownItemIdentities <- readIORef knownItemIdentitiesRef
+                      let currentItemIdentities =
+                            sortOn id (map itemStableIdentity (M.elems infoMap))
+                      if currentItemIdentities /= knownItemIdentities
+                        then do
+                          join (readIORef rebuildTrayRef)
+                        else void refresh
+                    _ -> void refresh
+                return False
+
+        installUpdateHandler = do
+          maybeHandlerId <- readIORef updateHandlerRef
+          case maybeHandlerId of
+            Just _ -> return ()
+            Nothing -> do
+              handlerId <- H.addUpdateHandler host queueRefresh
+              writeIORef updateHandlerRef (Just handlerId)
+
         buildTrayWithPriorities priorities processKeyMap infos = do
           let priorityConfig =
                 sniTrayPriorityConfig
@@ -982,6 +1021,7 @@ sniTrayPrioritizedCollapsibleNewFromHostParams PrioritizedCollapsibleSNITrayPara
                 void $ refreshTray tray
                 Gtk.widgetShow tray
                 writeIORef rebuildInProgressRef False
+                installUpdateHandler
                 pendingRebuild <- atomicModifyIORef' pendingRebuildRef (\pending -> (False, pending))
                 when pendingRebuild queueRebuild
                 return False
@@ -1020,38 +1060,17 @@ sniTrayPrioritizedCollapsibleNewFromHostParams PrioritizedCollapsibleSNITrayPara
           return True
         else return False
 
-    let queueRefresh updateType _ =
-          void $
-            Gdk.threadsAddIdle GLib.PRIORITY_DEFAULT $
-              do
-                rebuildInProgress <- readIORef rebuildInProgressRef
-                if rebuildInProgress
-                  then writeIORef pendingRebuildRef True
-                  else case updateType of
-                    H.ItemAdded -> do
-                      infoMap <- H.itemInfoMap host
-                      knownItemIdentities <- readIORef knownItemIdentitiesRef
-                      let currentItemIdentities =
-                            sortOn id (map itemStableIdentity (M.elems infoMap))
-                      if currentItemIdentities /= knownItemIdentities
-                        then do
-                          join (readIORef rebuildTrayRef)
-                        else void refresh
-                    H.ItemRemoved -> do
-                      infoMap <- H.itemInfoMap host
-                      knownItemIdentities <- readIORef knownItemIdentitiesRef
-                      let currentItemIdentities =
-                            sortOn id (map itemStableIdentity (M.elems infoMap))
-                      if currentItemIdentities /= knownItemIdentities
-                        then do
-                          join (readIORef rebuildTrayRef)
-                        else void refresh
-                    _ -> void refresh
-                return False
-    handlerId <- H.addUpdateHandler host queueRefresh
-    _ <- Gtk.onWidgetDestroy outer $ H.removeUpdateHandler host handlerId
+    _ <-
+      Gtk.onWidgetDestroy outer $
+        readIORef updateHandlerRef >>= traverse_ (H.removeUpdateHandler host)
 
+    -- Build once before installing the replaying host handler. The rebuild is
+    -- asynchronous, so the handler must wait until the first tray swap
+    -- completes; otherwise the initial ItemAdded replay can mark a pending
+    -- rebuild while the first tray is still populating and force a full
+    -- duplicate rebuild of the same items.
     rebuildTray
+
     Gtk.widgetShowAll outer
     refreshPriorityModeToggle
     _ <- refresh
