@@ -1012,7 +1012,13 @@ sniTrayPrioritizedCollapsibleNewFromHostParams PrioritizedCollapsibleSNITrayPara
           writeIORef knownItemIdentitiesRef currentItemIdentities
           let expectedChildCount = length currentItemIdentities
           waitAttemptsRef <- newIORef (0 :: Int)
-          let finishSwap = do
+          let cancelSwapAndRebuild = do
+                Gtk.widgetDestroy tray
+                writeIORef rebuildInProgressRef False
+                pendingRebuild <- atomicModifyIORef' pendingRebuildRef (\pending -> (False, pending))
+                when pendingRebuild queueRebuild
+                return False
+              finishSwap = do
                 forM_ oldTray $ \existingTray -> do
                   Gtk.containerRemove trayContainer existingTray
                   Gtk.widgetDestroy existingTray
@@ -1029,11 +1035,14 @@ sniTrayPrioritizedCollapsibleNewFromHostParams PrioritizedCollapsibleSNITrayPara
                 childCount <- length <$> Gtk.containerGetChildren tray
                 attempts <- readIORef waitAttemptsRef
                 pendingRebuild <- readIORef pendingRebuildRef
-                if childCount < expectedChildCount && attempts < 50 && not pendingRebuild
-                  then do
-                    writeIORef waitAttemptsRef (attempts + 1)
-                    return True
-                  else finishSwap
+                if pendingRebuild
+                  then cancelSwapAndRebuild
+                  else
+                    if childCount < expectedChildCount && attempts < 50
+                      then do
+                        writeIORef waitAttemptsRef (attempts + 1)
+                        return True
+                      else finishSwap
           void $
             Gdk.threadsAddIdle GLib.PRIORITY_DEFAULT waitForPopulation
 
