@@ -27,6 +27,7 @@ import Data.Maybe
 import Data.Ord
 import Data.Ratio
 import qualified Data.Text as T
+import Data.Unique (hashUnique, newUnique)
 import Data.Word
 import Foreign.Ptr (Ptr)
 import qualified GI.DbusmenuGtk3.Objects.Menu as DM
@@ -501,7 +502,8 @@ buildTray
           }
     } =
     do
-      trayLogger INFO "Building tray"
+      trayInstance <- hashUnique <$> newUnique
+      trayLogger INFO $ printf "Building tray instance=%d" trayInstance
 
       trayBox <- Gtk.boxNew orientation 0
       when centerIcons $ case orientation of
@@ -970,7 +972,15 @@ buildTray
             void $
               Gdk.threadsAddIdle GLib.PRIORITY_DEFAULT $
                 catchAny
-                  ( updateHandler updateType info
+                  ( trayLogger
+                      DEBUG
+                      ( printf
+                          "Tray instance=%d handling update=%s service=%s"
+                          trayInstance
+                          (show updateType)
+                          (coerce (itemServiceName info) :: String)
+                      )
+                      >> updateHandler updateType info
                       >> reorderTrayByPriority
                       >> return False
                   )
@@ -980,5 +990,16 @@ buildTray
                   )
 
       handlerId <- addUHandler uiUpdateHandler
-      _ <- Gtk.onWidgetDestroy trayBox $ removeUHandler handlerId
+      trayLogger INFO $
+        printf
+          "Registered tray update handler tray=%d handler=%d"
+          trayInstance
+          (hashUnique handlerId)
+      _ <- Gtk.onWidgetDestroy trayBox $ do
+        trayLogger INFO $
+          printf
+            "Removing tray update handler tray=%d handler=%d"
+            trayInstance
+            (hashUnique handlerId)
+        removeUHandler handlerId
       return trayBox

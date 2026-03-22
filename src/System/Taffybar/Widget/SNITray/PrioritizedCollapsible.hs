@@ -39,6 +39,7 @@ import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, listToMaybe, mapMaybe, maybeToList)
 import Data.Ord (Down (..))
 import qualified Data.Text as T
+import Data.Unique (hashUnique)
 import Data.Word (Word32)
 import qualified Data.Yaml as Y
 import qualified GI.GLib as GLib
@@ -51,6 +52,7 @@ import qualified StatusNotifier.Tray as Tray
 import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.Environment.XDG.BaseDir (getUserConfigFile)
 import System.FilePath (isRelative, replaceExtension, takeBaseName, takeDirectory, takeExtension)
+import System.Log.Logger (Priority (DEBUG, INFO), logM)
 import System.Taffybar.Context
 import System.Taffybar.Widget.SNITray
   ( CollapsibleSNITrayParams (..),
@@ -59,7 +61,11 @@ import System.Taffybar.Widget.SNITray
     getTrayHost,
   )
 import System.Taffybar.Widget.Util
+import Text.Printf
 import Text.Read (readMaybe)
+
+prioritizedTrayLog :: Priority -> String -> IO ()
+prioritizedTrayLog = logM "System.Taffybar.Widget.SNITray.PrioritizedCollapsible"
 
 type SNIPriorityMap = M.Map String Int
 
@@ -774,6 +780,7 @@ sniTrayPrioritizedCollapsibleNewFromHostParams PrioritizedCollapsibleSNITrayPara
     rebuildInProgressRef <- newIORef False
     pendingRebuildRef <- newIORef False
     updateHandlerRef <- newIORef Nothing
+    rebuildSequenceRef <- newIORef (0 :: Int)
 
     outer <- Gtk.boxNew trayOrientation' 0
     _ <- widgetSetClassGI outer "sni-tray-collapsible"
@@ -802,8 +809,11 @@ sniTrayPrioritizedCollapsibleNewFromHostParams PrioritizedCollapsibleSNITrayPara
     let queueRebuild = do
           rebuildInProgress <- readIORef rebuildInProgressRef
           if rebuildInProgress
-            then writeIORef pendingRebuildRef True
+            then do
+              prioritizedTrayLog DEBUG "queueRebuild: rebuild already in progress; marking pending."
+              writeIORef pendingRebuildRef True
             else do
+              prioritizedTrayLog DEBUG "queueRebuild: scheduling rebuild on idle."
               rebuild <- readIORef rebuildTrayRef
               void $
                 Gdk.threadsAddIdle GLib.PRIORITY_DEFAULT $
@@ -921,7 +931,12 @@ sniTrayPrioritizedCollapsibleNewFromHostParams PrioritizedCollapsibleSNITrayPara
               do
                 rebuildInProgress <- readIORef rebuildInProgressRef
                 if rebuildInProgress
-                  then writeIORef pendingRebuildRef True
+                  then do
+                    prioritizedTrayLog DEBUG $
+                      printf
+                        "queueRefresh update=%s while rebuild in progress; marking pending."
+                        (show updateType)
+                    writeIORef pendingRebuildRef True
                   else case updateType of
                     H.ItemAdded -> do
                       infoMap <- H.itemInfoMap host
@@ -930,8 +945,19 @@ sniTrayPrioritizedCollapsibleNewFromHostParams PrioritizedCollapsibleSNITrayPara
                             sortOn id (map itemStableIdentity (M.elems infoMap))
                       if currentItemIdentities /= knownItemIdentities
                         then do
+                          prioritizedTrayLog INFO $
+                            printf
+                              "queueRefresh update=%s requesting rebuild; known=%d current=%d"
+                              (show updateType)
+                              (length knownItemIdentities)
+                              (length currentItemIdentities)
                           join (readIORef rebuildTrayRef)
-                        else void refresh
+                        else do
+                          prioritizedTrayLog DEBUG $
+                            printf
+                              "queueRefresh update=%s refreshing without rebuild."
+                              (show updateType)
+                          void refresh
                     H.ItemRemoved -> do
                       infoMap <- H.itemInfoMap host
                       knownItemIdentities <- readIORef knownItemIdentitiesRef
@@ -939,17 +965,41 @@ sniTrayPrioritizedCollapsibleNewFromHostParams PrioritizedCollapsibleSNITrayPara
                             sortOn id (map itemStableIdentity (M.elems infoMap))
                       if currentItemIdentities /= knownItemIdentities
                         then do
+                          prioritizedTrayLog INFO $
+                            printf
+                              "queueRefresh update=%s requesting rebuild; known=%d current=%d"
+                              (show updateType)
+                              (length knownItemIdentities)
+                              (length currentItemIdentities)
                           join (readIORef rebuildTrayRef)
-                        else void refresh
-                    _ -> void refresh
+                        else do
+                          prioritizedTrayLog DEBUG $
+                            printf
+                              "queueRefresh update=%s refreshing without rebuild."
+                              (show updateType)
+                          void refresh
+                    _ -> do
+                      prioritizedTrayLog DEBUG $
+                        printf
+                          "queueRefresh update=%s refreshing without rebuild."
+                          (show updateType)
+                      void refresh
                 return False
 
         installUpdateHandler = do
           maybeHandlerId <- readIORef updateHandlerRef
           case maybeHandlerId of
-            Just _ -> return ()
+            Just handlerId ->
+              prioritizedTrayLog DEBUG $
+                printf
+                  "installUpdateHandler: handler already registered id=%d"
+                  (hashUnique handlerId)
             Nothing -> do
               handlerId <- H.addUpdateHandler host queueRefresh
+              prioritizedTrayLog INFO $
+                printf
+                  "Registered prioritized tray host update handler id=%d"
+                  (hashUnique handlerId)
               writeIORef updateHandlerRef (Just handlerId)
 
         buildTrayWithPriorities priorities processKeyMap infos = do
@@ -987,6 +1037,8 @@ sniTrayPrioritizedCollapsibleNewFromHostParams PrioritizedCollapsibleSNITrayPara
           return tray
 
         rebuildTray = do
+          rebuildSequence <-
+            atomicModifyIORef' rebuildSequenceRef (\n -> let next = n + 1 in (next, next))
           writeIORef rebuildInProgressRef True
           writeIORef pendingRebuildRef False
           priorities <- readIORef prioritiesRef
@@ -1004,6 +1056,12 @@ sniTrayPrioritizedCollapsibleNewFromHostParams PrioritizedCollapsibleSNITrayPara
                   infos
               currentItemIdentities =
                 sortOn id (map itemStableIdentity infos)
+          prioritizedTrayLog INFO $
+            printf
+              "Starting prioritized tray rebuild #%d with %d items: %s"
+              rebuildSequence
+              (length currentItemIdentities)
+              (show currentItemIdentities)
           tray <- buildTrayWithPriorities priorities processKeyMap orderedInfos
           Gtk.widgetHide tray
           oldTray <- readIORef trayRef
@@ -1013,12 +1071,20 @@ sniTrayPrioritizedCollapsibleNewFromHostParams PrioritizedCollapsibleSNITrayPara
           let expectedChildCount = length currentItemIdentities
           waitAttemptsRef <- newIORef (0 :: Int)
           let cancelSwapAndRebuild = do
+                childCount <- length <$> Gtk.containerGetChildren tray
+                prioritizedTrayLog INFO $
+                  printf
+                    "Canceling stale rebuild #%d before swap; childCount=%d expected=%d"
+                    rebuildSequence
+                    childCount
+                    expectedChildCount
                 Gtk.widgetDestroy tray
                 writeIORef rebuildInProgressRef False
                 pendingRebuild <- atomicModifyIORef' pendingRebuildRef (\pending -> (False, pending))
                 when pendingRebuild queueRebuild
                 return False
               finishSwap = do
+                childCount <- length <$> Gtk.containerGetChildren tray
                 forM_ oldTray $ \existingTray -> do
                   Gtk.containerRemove trayContainer existingTray
                   Gtk.widgetDestroy existingTray
@@ -1029,6 +1095,13 @@ sniTrayPrioritizedCollapsibleNewFromHostParams PrioritizedCollapsibleSNITrayPara
                 writeIORef rebuildInProgressRef False
                 installUpdateHandler
                 pendingRebuild <- atomicModifyIORef' pendingRebuildRef (\pending -> (False, pending))
+                prioritizedTrayLog INFO $
+                  printf
+                    "Finished prioritized tray rebuild #%d; childCount=%d expected=%d pendingRebuild=%s"
+                    rebuildSequence
+                    childCount
+                    expectedChildCount
+                    (show pendingRebuild)
                 when pendingRebuild queueRebuild
                 return False
               waitForPopulation = do
@@ -1040,6 +1113,14 @@ sniTrayPrioritizedCollapsibleNewFromHostParams PrioritizedCollapsibleSNITrayPara
                   else
                     if childCount < expectedChildCount && attempts < 50
                       then do
+                        when (attempts == 0 || attempts == 49) $
+                          prioritizedTrayLog DEBUG $
+                            printf
+                              "Waiting for prioritized tray rebuild #%d population; attempt=%d childCount=%d expected=%d"
+                              rebuildSequence
+                              attempts
+                              childCount
+                              expectedChildCount
                         writeIORef waitAttemptsRef (attempts + 1)
                         return True
                       else finishSwap
@@ -1071,7 +1152,15 @@ sniTrayPrioritizedCollapsibleNewFromHostParams PrioritizedCollapsibleSNITrayPara
 
     _ <-
       Gtk.onWidgetDestroy outer $
-        readIORef updateHandlerRef >>= traverse_ (H.removeUpdateHandler host)
+        readIORef updateHandlerRef
+          >>= traverse_
+            ( \handlerId -> do
+                prioritizedTrayLog INFO $
+                  printf
+                    "Removing prioritized tray host update handler id=%d"
+                    (hashUnique handlerId)
+                H.removeUpdateHandler host handlerId
+            )
 
     -- Build once before installing the replaying host handler. The rebuild is
     -- asynchronous, so the handler must wait until the first tray swap
