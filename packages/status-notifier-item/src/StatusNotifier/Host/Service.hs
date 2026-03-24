@@ -109,8 +109,56 @@ data ItemInfo = ItemInfo
   }
   deriving (Eq, Show)
 
+data LogicalDuplicateKey = LogicalDuplicateKey
+  { duplicateItemId :: Maybe String,
+    duplicateIconTitle :: Maybe String,
+    duplicateIconName :: Maybe String,
+    duplicateCategory :: Maybe String,
+    duplicateMenuPath :: Maybe ObjectPath,
+    duplicatePath :: ObjectPath,
+    duplicateIsMenu :: Bool
+  }
+  deriving (Eq, Show)
+
 supressPixelData info =
-  info {iconPixmaps = map (\(w, h, _) -> (w, h, "")) $ iconPixmaps info}
+  info
+    { iconPixmaps = map (\(w, h, _) -> (w, h, "")) $ iconPixmaps info,
+      overlayIconPixmaps = map (\(w, h, _) -> (w, h, "")) $ overlayIconPixmaps info
+    }
+
+normalizeOptionalString :: String -> Maybe String
+normalizeOptionalString value
+  | null value = Nothing
+  | otherwise = Just value
+
+logicalDuplicateKey :: ItemInfo -> Maybe LogicalDuplicateKey
+logicalDuplicateKey ItemInfo {..} =
+  let key =
+        LogicalDuplicateKey
+          { duplicateItemId = itemId >>= normalizeOptionalString,
+            duplicateIconTitle = normalizeOptionalString iconTitle,
+            duplicateIconName = normalizeOptionalString iconName,
+            duplicateCategory = itemCategory >>= normalizeOptionalString,
+            duplicateMenuPath = menuPath,
+            duplicatePath = itemServicePath,
+            duplicateIsMenu = itemIsMenu
+          }
+      hasStableIdentity =
+        isJust (duplicateItemId key)
+          || isJust (duplicateIconTitle key)
+          || isJust (duplicateIconName key)
+   in if hasStableIdentity then Just key else Nothing
+
+findUniqueMatchM :: (a -> IO Bool) -> [a] -> IO (Maybe a)
+findUniqueMatchM predicate values = go values Nothing
+  where
+    go [] match = pure match
+    go (value : rest) match = do
+      matches <- predicate value
+      case (matches, match) of
+        (False, _) -> go rest match
+        (True, Nothing) -> go rest (Just value)
+        (True, Just _) -> pure Nothing
 
 makeLensesWithLSuffix ''ItemInfo
 
@@ -304,11 +352,40 @@ build
                             existingName /= newName
                               && existingOwner == newOwner
                               && itemServicePath existingInfo == newPath
+                        matchesLogicalDuplicate (existingName, existingInfo) =
+                          pure $
+                            existingName /= newName
+                              && logicalDuplicateKey existingInfo == logicalDuplicateKey itemInfo
                         addFresh = do
                           doUpdate ItemAdded itemInfo
                           pure (Map.insert newName itemInfo map)
+                        replaceExisting :: BusName -> ItemInfo -> String -> IO (Map.Map BusName ItemInfo)
+                        replaceExisting existingName existingInfo reason = do
+                          logInfo $
+                            printf
+                              "Replacing tracked item %s with %s for %s"
+                              (coerce existingName :: String)
+                              (coerce newName :: String)
+                              reason
+                          doUpdate ItemRemoved existingInfo
+                          doUpdate ItemAdded itemInfo
+                          pure $
+                            Map.insert newName itemInfo $
+                              Map.delete existingName map
+                        tryLogicalDuplicateMatch =
+                          case logicalDuplicateKey itemInfo of
+                            Nothing -> addFresh
+                            Just duplicateKey -> do
+                              existing <- findUniqueMatchM matchesLogicalDuplicate (Map.toList map)
+                              case existing of
+                                Just (existingName, existingInfo) ->
+                                  replaceExisting
+                                    existingName
+                                    existingInfo
+                                    (printf "logical duplicate key %s" (show duplicateKey))
+                                Nothing -> addFresh
                     case newOwner of
-                      Nothing -> addFresh
+                      Nothing -> tryLogicalDuplicateMatch
                       Just _ -> do
                         existing <- findM matchesOwnerAndPath (Map.toList map)
                         case existing of
@@ -318,19 +395,12 @@ build
                                 "Tracking fresh item %s at %s"
                                 (coerce newName :: String)
                                 (coerce newPath :: String)
-                            addFresh
-                          Just (existingName, existingInfo) -> do
-                            logInfo $
-                              printf
-                                "Replacing tracked item %s with %s for shared owner/path at %s"
-                                (coerce existingName :: String)
-                                (coerce newName :: String)
-                                (coerce newPath :: String)
-                            doUpdate ItemRemoved existingInfo
-                            doUpdate ItemAdded itemInfo
-                            pure $
-                              Map.insert newName itemInfo $
-                                Map.delete existingName map
+                            tryLogicalDuplicateMatch
+                          Just (existingName, existingInfo) ->
+                            replaceExisting
+                              existingName
+                              existingInfo
+                              (printf "shared owner/path at %s" (coerce newPath :: String))
 
         getObjectPathForItemName name =
           maybe I.defaultPath itemServicePath . Map.lookup name

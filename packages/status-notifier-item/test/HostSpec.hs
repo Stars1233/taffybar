@@ -3,30 +3,29 @@
 module HostSpec (spec) where
 
 import Control.Concurrent
-  ( forkIO
-  , newChan
-  , newEmptyMVar
-  , putMVar
-  , readChan
-  , takeMVar
-  , threadDelay
-  , tryPutMVar
-  , writeChan
+  ( forkIO,
+    newChan,
+    newEmptyMVar,
+    putMVar,
+    readChan,
+    takeMVar,
+    threadDelay,
+    tryPutMVar,
+    writeChan,
   )
 import Control.Exception (finally)
 import Control.Monad (replicateM, void)
-import Data.List (sort)
-import qualified Data.Map.Strict as Map
 import DBus (busName_, objectPath_)
 import DBus.Client
 import qualified DBus.Internal.Message as M
 import DBus.Internal.Types (ErrorName, Serial (..), errorName_)
+import Data.List (sort)
+import qualified Data.Map.Strict as Map
 import StatusNotifier.Host.Service hiding (startWatcher)
 import qualified StatusNotifier.Watcher.Client as WatcherClient
 import System.Log.Logger (Priority (..))
 import System.Timeout (timeout)
 import Test.Hspec
-
 import TestSupport
 
 spec :: Spec
@@ -107,7 +106,7 @@ spec = around withIsolatedSessionBus $ do
       Just host <- build defaultParams {dbusClient = Just hostClient, uniqueIdentifier = "host-e"}
       itemClient <- connectSession
       cleanup <- registerSimpleItem itemClient "org.test.HostItemE" defaultPath "drive-harddisk"
-      (do
+      ( do
           populated <-
             waitFor 1500000 $ do
               current <- itemInfoMap host
@@ -115,7 +114,8 @@ spec = around withIsolatedSessionBus $ do
                 Just info -> iconName info == "drive-harddisk"
                 Nothing -> False
           populated `shouldBe` True
-        ) `finally` cleanup
+        )
+        `finally` cleanup
 
     it "replays all pre-existing items to newly-added handlers" $ \() -> do
       _watcher <- startWatcher
@@ -124,7 +124,7 @@ spec = around withIsolatedSessionBus $ do
       itemClientB <- connectSession
       cleanupA <- registerSimpleItem itemClientA "org.test.HostItemF" defaultPath "audio-volume-high"
       cleanupB <- registerSimpleItem itemClientB "org.test.HostItemG" defaultPath "audio-volume-low"
-      (do
+      ( do
           Just host <- build defaultParams {dbusClient = Just hostClient, uniqueIdentifier = "host-f"}
           events <- newChan
           _ <- addUpdateHandler host (\ut info -> writeChan events (ut, itemServiceName info))
@@ -132,7 +132,8 @@ spec = around withIsolatedSessionBus $ do
           let addedNames = sort [name | Just (ItemAdded, name) <- replayed]
           addedNames
             `shouldBe` sort [busName_ "org.test.HostItemF", busName_ "org.test.HostItemG"]
-        ) `finally` (cleanupA >> cleanupB)
+        )
+        `finally` (cleanupA >> cleanupB)
 
     it "does not emit updates for forceUpdate on unknown services" $ \() -> do
       _watcher <- startWatcher
@@ -152,14 +153,14 @@ spec = around withIsolatedSessionBus $ do
       itemClient <- connectSession
       let iface =
             Interface
-              { interfaceName = "org.kde.StatusNotifierItem"
-              , interfaceMethods = []
-              , interfaceProperties =
-                  [ readOnlyProperty "IconName" (pure ("folder" :: String))
-                  , readOnlyProperty "OverlayIconName" (pure ("" :: String))
-                  , readOnlyProperty "ItemIsMenu" (pure False)
-                  ]
-              , interfaceSignals = []
+              { interfaceName = "org.kde.StatusNotifierItem",
+                interfaceMethods = [],
+                interfaceProperties =
+                  [ readOnlyProperty "IconName" (pure ("folder" :: String)),
+                    readOnlyProperty "OverlayIconName" (pure ("" :: String)),
+                    readOnlyProperty "ItemIsMenu" (pure False)
+                  ],
+                interfaceSignals = []
               }
           defaultPath = "/StatusNotifierItem"
       export itemClient (objectPath_ defaultPath) iface
@@ -204,6 +205,104 @@ spec = around withIsolatedSessionBus $ do
               && not (Map.member initialKey current)
       deduped `shouldBe` True
 
+    it "deduplicates a logically identical item that appears under a new bus name" $ \() -> do
+      _watcher <- startWatcher
+      hostClient <- connectSession
+      Just host <- build defaultParams {dbusClient = Just hostClient, uniqueIdentifier = "host-h2"}
+
+      let duplicateIface =
+            Interface
+              { interfaceName = "org.kde.StatusNotifierItem",
+                interfaceMethods = [],
+                interfaceProperties =
+                  [ readOnlyProperty "Id" (pure ("dup-item" :: String)),
+                    readOnlyProperty "Title" (pure ("Duplicate Item" :: String)),
+                    readOnlyProperty "Category" (pure ("ApplicationStatus" :: String)),
+                    readOnlyProperty "IconName" (pure ("folder" :: String)),
+                    readOnlyProperty "OverlayIconName" (pure ("" :: String)),
+                    readOnlyProperty "ItemIsMenu" (pure False)
+                  ],
+                interfaceSignals = []
+              }
+          itemAName = "org.test.HostLogicalDuplicateA"
+          itemBName = "org.test.HostLogicalDuplicateB"
+      itemClientA <- connectSession
+      export itemClientA (objectPath_ defaultPath) duplicateIface
+      _ <- requestName itemClientA (busName_ itemAName) []
+      WatcherClient.registerStatusNotifierItem itemClientA itemAName
+        `shouldReturn` Right ()
+
+      initialReady <-
+        waitFor 1500000 $ do
+          current <- itemInfoMap host
+          pure $ Map.size current == 1 && Map.member (busName_ itemAName) current
+      initialReady `shouldBe` True
+
+      itemClientB <- connectSession
+      export itemClientB (objectPath_ defaultPath) duplicateIface
+      _ <- requestName itemClientB (busName_ itemBName) []
+      WatcherClient.registerStatusNotifierItem itemClientB itemBName
+        `shouldReturn` Right ()
+
+      deduped <-
+        waitFor 1500000 $ do
+          current <- itemInfoMap host
+          pure $
+            Map.size current == 1
+              && Map.member (busName_ itemBName) current
+              && not (Map.member (busName_ itemAName) current)
+      deduped `shouldBe` True
+
+      _ <- releaseName itemClientA (busName_ itemAName)
+      _ <- releaseName itemClientB (busName_ itemBName)
+      pure ()
+
+    it "keeps distinct items when shared ids differ by title or icon" $ \() -> do
+      _watcher <- startWatcher
+      hostClient <- connectSession
+      Just host <- build defaultParams {dbusClient = Just hostClient, uniqueIdentifier = "host-h3"}
+
+      let makeIface title iconName =
+            Interface
+              { interfaceName = "org.kde.StatusNotifierItem",
+                interfaceMethods = [],
+                interfaceProperties =
+                  [ readOnlyProperty "Id" (pure ("git-sync-rs" :: String)),
+                    readOnlyProperty "Title" (pure title),
+                    readOnlyProperty "Category" (pure ("ApplicationStatus" :: String)),
+                    readOnlyProperty "IconName" (pure iconName),
+                    readOnlyProperty "OverlayIconName" (pure ("" :: String)),
+                    readOnlyProperty "ItemIsMenu" (pure True)
+                  ],
+                interfaceSignals = []
+              }
+          itemAName = "org.test.HostDistinctSharedA"
+          itemBName = "org.test.HostDistinctSharedB"
+      itemClientA <- connectSession
+      export itemClientA (objectPath_ defaultPath) (makeIface "git-sync-rs - org" "text-org")
+      _ <- requestName itemClientA (busName_ itemAName) []
+      WatcherClient.registerStatusNotifierItem itemClientA itemAName
+        `shouldReturn` Right ()
+
+      itemClientB <- connectSession
+      export itemClientB (objectPath_ defaultPath) (makeIface "git-sync-rs - .password-store" "password")
+      _ <- requestName itemClientB (busName_ itemBName) []
+      WatcherClient.registerStatusNotifierItem itemClientB itemBName
+        `shouldReturn` Right ()
+
+      bothPresent <-
+        waitFor 1500000 $ do
+          current <- itemInfoMap host
+          pure $
+            Map.size current == 2
+              && Map.member (busName_ itemAName) current
+              && Map.member (busName_ itemBName) current
+      bothPresent `shouldBe` True
+
+      _ <- releaseName itemClientA (busName_ itemAName)
+      _ <- releaseName itemClientB (busName_ itemBName)
+      pure ()
+
     it "removes stale items when watcher ownership changes and replacement watcher has no item" $ \() -> do
       watcher1 <- startWatcher
 
@@ -240,17 +339,17 @@ spec = around withIsolatedSessionBus $ do
       let itemName = "org.test.HostHandlerRace"
           iface =
             Interface
-              { interfaceName = "org.kde.StatusNotifierItem"
-              , interfaceMethods = []
-              , interfaceProperties =
+              { interfaceName = "org.kde.StatusNotifierItem",
+                interfaceMethods = [],
+                interfaceProperties =
                   [ readOnlyProperty "IconName" $ do
                       void $ tryPutMVar buildStarted ()
                       takeMVar continueBuild
-                      pure ("folder" :: String)
-                  , readOnlyProperty "OverlayIconName" (pure ("" :: String))
-                  , readOnlyProperty "ItemIsMenu" (pure False)
-                  ]
-              , interfaceSignals = []
+                      pure ("folder" :: String),
+                    readOnlyProperty "OverlayIconName" (pure ("" :: String)),
+                    readOnlyProperty "ItemIsMenu" (pure False)
+                  ],
+                interfaceSignals = []
               }
       export itemClient (objectPath_ defaultPath) iface
       _ <- requestName itemClient (busName_ itemName) []
@@ -301,11 +400,11 @@ defaultPath = "/StatusNotifierItem"
 mkMethodError :: ErrorName -> M.MethodError
 mkMethodError errName =
   M.MethodError
-    { M.methodErrorName = errName
-    , M.methodErrorSerial = Serial 0
-    , M.methodErrorSender = Nothing
-    , M.methodErrorDestination = Nothing
-    , M.methodErrorBody = []
+    { M.methodErrorName = errName,
+      M.methodErrorSerial = Serial 0,
+      M.methodErrorSender = Nothing,
+      M.methodErrorDestination = Nothing,
+      M.methodErrorBody = []
     }
 
 errorInvalidArgs :: ErrorName
