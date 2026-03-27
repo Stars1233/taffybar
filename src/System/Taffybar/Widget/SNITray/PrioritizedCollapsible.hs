@@ -19,7 +19,7 @@ module System.Taffybar.Widget.SNITray.PrioritizedCollapsible
 where
 
 import Control.Applicative ((<|>))
-import Control.Monad (forM_, guard, join, void, when)
+import Control.Monad (forM_, guard, void, when)
 import Control.Monad.Trans.Class
 import Control.Monad.Trans.Reader
 import qualified DBus as D
@@ -772,15 +772,10 @@ sniTrayPrioritizedCollapsibleNewFromHostParams PrioritizedCollapsibleSNITrayPara
     maxVisibleIconsRef <- newIORef initialMaxVisibleIcons
     visibilityThresholdRef <- newIORef initialVisibilityThreshold
     hiddenCountRef <- newIORef 0
-    knownItemIdentitiesRef <- newIORef ([] :: [String])
     orderedInfosRef <- newIORef ([] :: [H.ItemInfo])
     processDisambiguationKeysRef <- newIORef (M.empty :: M.Map String String)
     trayRef <- newIORef Nothing
-    rebuildTrayRef <- newIORef (return ())
-    rebuildInProgressRef <- newIORef False
-    pendingRebuildRef <- newIORef False
     updateHandlerRef <- newIORef Nothing
-    rebuildSequenceRef <- newIORef (0 :: Int)
 
     outer <- Gtk.boxNew trayOrientation' 0
     _ <- widgetSetClassGI outer "sni-tray-collapsible"
@@ -806,20 +801,7 @@ sniTrayPrioritizedCollapsibleNewFromHostParams PrioritizedCollapsibleSNITrayPara
     Gtk.boxPackStart outer trayContainer False False 0
     Gtk.boxPackStart outer settingsToggle False False 0
 
-    let queueRebuild = do
-          rebuildInProgress <- readIORef rebuildInProgressRef
-          if rebuildInProgress
-            then do
-              prioritizedTrayLog DEBUG "queueRebuild: rebuild already in progress; marking pending."
-              writeIORef pendingRebuildRef True
-            else do
-              prioritizedTrayLog DEBUG "queueRebuild: scheduling rebuild on idle."
-              rebuild <- readIORef rebuildTrayRef
-              void $
-                Gdk.threadsAddIdle GLib.PRIORITY_DEFAULT $
-                  rebuild >> return False
-
-        persistCurrentState = do
+    let persistCurrentState = do
           priorities <- readIORef prioritiesRef
           maxVisibleIcons <- readIORef maxVisibleIconsRef
           visibilityThresholdOverride <- readIORef visibilityThresholdRef
@@ -834,6 +816,57 @@ sniTrayPrioritizedCollapsibleNewFromHostParams PrioritizedCollapsibleSNITrayPara
         processKeyForInfoFromMap processKeyMap info =
           M.lookup (itemStableIdentity info) processKeyMap
 
+        updateOrderedInfos recomputeProcessKeys = do
+          infoMap <- H.itemInfoMap host
+          let infos = M.elems infoMap
+          processKeyMap <-
+            if recomputeProcessKeys
+              then processDisambiguationKeysForItems client infos
+              else readIORef processDisambiguationKeysRef
+          when recomputeProcessKeys $
+            writeIORef processDisambiguationKeysRef processKeyMap
+          priorities <- readIORef prioritiesRef
+          let orderedInfos =
+                sortedInfosByPriority
+                  highPriorityFirstInMatcherOrder
+                  priorityMin
+                  priorityMax
+                  defaultPriority
+                  priorities
+                  (processKeyForInfoFromMap processKeyMap)
+                  infos
+          writeIORef orderedInfosRef orderedInfos
+          return orderedInfos
+
+        scheduleRefresh recomputeProcessKeys waitForExactChildCount updateType = do
+          attemptsRef <- newIORef (0 :: Int)
+          void $
+            Gdk.threadsAddIdle GLib.PRIORITY_DEFAULT $
+              do
+                orderedInfos <- updateOrderedInfos recomputeProcessKeys
+                maybeTray <- readIORef trayRef
+                case maybeTray of
+                  Nothing -> return False
+                  Just tray -> do
+                    childCount <- length <$> Gtk.containerGetChildren tray
+                    let expectedChildCount = length orderedInfos
+                    attempts <- readIORef attemptsRef
+                    if waitForExactChildCount && childCount /= expectedChildCount && attempts < 50
+                      then do
+                        when (attempts == 0 || attempts == 49) $
+                          prioritizedTrayLog DEBUG $
+                            printf
+                              "Delaying prioritized tray refresh update=%s; attempt=%d childCount=%d expected=%d"
+                              (show updateType)
+                              attempts
+                              childCount
+                              expectedChildCount
+                        writeIORef attemptsRef (attempts + 1)
+                        return True
+                      else do
+                        void $ refreshTray tray
+                        return False
+
         editPriorityForClick clickContext = do
           let clickedInfo = trayClickItemInfo clickContext
           priorities <- readIORef prioritiesRef
@@ -844,7 +877,7 @@ sniTrayPrioritizedCollapsibleNewFromHostParams PrioritizedCollapsibleSNITrayPara
               updatePriority newPriority = do
                 setExplicitPriorityForItem
                   prioritiesRef
-                  (\_ -> persistCurrentState >> queueRebuild)
+                  (\_ -> persistCurrentState >> scheduleRefresh False False H.IconUpdated)
                   maybeProcessKey
                   clickedInfo
                   (fmap clampPriority newPriority)
@@ -865,13 +898,14 @@ sniTrayPrioritizedCollapsibleNewFromHostParams PrioritizedCollapsibleSNITrayPara
               removeClassIfPresent "sni-tray-editing" outer
 
         refreshTray tray = do
-          children <- Gtk.containerGetChildren tray
           expanded <- readIORef expandedRef
           priorities <- readIORef prioritiesRef
           maxVisibleIcons <- readIORef maxVisibleIconsRef
           thresholdValue <- readIORef visibilityThresholdRef
           orderedInfos <- readIORef orderedInfosRef
           processKeyMap <- readIORef processDisambiguationKeysRef
+          reorderTrayChildrenByIdentities tray (map itemStableIdentity orderedInfos)
+          children <- Gtk.containerGetChildren tray
 
           let itemPriority info =
                 itemPriorityFromMap
@@ -926,65 +960,10 @@ sniTrayPrioritizedCollapsibleNewFromHostParams PrioritizedCollapsibleSNITrayPara
             Just tray -> refreshTray tray
 
         queueRefresh updateType _ =
-          void $
-            Gdk.threadsAddIdle GLib.PRIORITY_DEFAULT $
-              do
-                rebuildInProgress <- readIORef rebuildInProgressRef
-                if rebuildInProgress
-                  then do
-                    prioritizedTrayLog DEBUG $
-                      printf
-                        "queueRefresh update=%s while rebuild in progress; marking pending."
-                        (show updateType)
-                    writeIORef pendingRebuildRef True
-                  else case updateType of
-                    H.ItemAdded -> do
-                      infoMap <- H.itemInfoMap host
-                      knownItemIdentities <- readIORef knownItemIdentitiesRef
-                      let currentItemIdentities =
-                            sortOn id (map itemStableIdentity (M.elems infoMap))
-                      if currentItemIdentities /= knownItemIdentities
-                        then do
-                          prioritizedTrayLog INFO $
-                            printf
-                              "queueRefresh update=%s requesting rebuild; known=%d current=%d"
-                              (show updateType)
-                              (length knownItemIdentities)
-                              (length currentItemIdentities)
-                          join (readIORef rebuildTrayRef)
-                        else do
-                          prioritizedTrayLog DEBUG $
-                            printf
-                              "queueRefresh update=%s refreshing without rebuild."
-                              (show updateType)
-                          void refresh
-                    H.ItemRemoved -> do
-                      infoMap <- H.itemInfoMap host
-                      knownItemIdentities <- readIORef knownItemIdentitiesRef
-                      let currentItemIdentities =
-                            sortOn id (map itemStableIdentity (M.elems infoMap))
-                      if currentItemIdentities /= knownItemIdentities
-                        then do
-                          prioritizedTrayLog INFO $
-                            printf
-                              "queueRefresh update=%s requesting rebuild; known=%d current=%d"
-                              (show updateType)
-                              (length knownItemIdentities)
-                              (length currentItemIdentities)
-                          join (readIORef rebuildTrayRef)
-                        else do
-                          prioritizedTrayLog DEBUG $
-                            printf
-                              "queueRefresh update=%s refreshing without rebuild."
-                              (show updateType)
-                          void refresh
-                    _ -> do
-                      prioritizedTrayLog DEBUG $
-                        printf
-                          "queueRefresh update=%s refreshing without rebuild."
-                          (show updateType)
-                      void refresh
-                return False
+          case updateType of
+            H.ItemAdded -> scheduleRefresh True True updateType
+            H.ItemRemoved -> scheduleRefresh True True updateType
+            _ -> scheduleRefresh False False updateType
 
         installUpdateHandler = do
           maybeHandlerId <- readIORef updateHandlerRef
@@ -1036,99 +1015,6 @@ sniTrayPrioritizedCollapsibleNewFromHostParams PrioritizedCollapsibleSNITrayPara
           _ <- widgetSetClassGI tray "sni-tray"
           return tray
 
-        rebuildTray = do
-          rebuildSequence <-
-            atomicModifyIORef' rebuildSequenceRef (\n -> let next = n + 1 in (next, next))
-          writeIORef rebuildInProgressRef True
-          writeIORef pendingRebuildRef False
-          priorities <- readIORef prioritiesRef
-          infoMap <- H.itemInfoMap host
-          processKeyMap <- processDisambiguationKeysForItems client (M.elems infoMap)
-          let infos = M.elems infoMap
-              orderedInfos =
-                sortedInfosByPriority
-                  highPriorityFirstInMatcherOrder
-                  priorityMin
-                  priorityMax
-                  defaultPriority
-                  priorities
-                  (processKeyForInfoFromMap processKeyMap)
-                  infos
-              currentItemIdentities =
-                sortOn id (map itemStableIdentity infos)
-          prioritizedTrayLog INFO $
-            printf
-              "Starting prioritized tray rebuild #%d with %d items: %s"
-              rebuildSequence
-              (length currentItemIdentities)
-              (show currentItemIdentities)
-          tray <- buildTrayWithPriorities priorities processKeyMap orderedInfos
-          Gtk.widgetHide tray
-          oldTray <- readIORef trayRef
-          writeIORef orderedInfosRef orderedInfos
-          writeIORef processDisambiguationKeysRef processKeyMap
-          writeIORef knownItemIdentitiesRef currentItemIdentities
-          let expectedChildCount = length currentItemIdentities
-          waitAttemptsRef <- newIORef (0 :: Int)
-          let cancelSwapAndRebuild = do
-                childCount <- length <$> Gtk.containerGetChildren tray
-                prioritizedTrayLog INFO $
-                  printf
-                    "Canceling stale rebuild #%d before swap; childCount=%d expected=%d"
-                    rebuildSequence
-                    childCount
-                    expectedChildCount
-                Gtk.widgetDestroy tray
-                writeIORef rebuildInProgressRef False
-                pendingRebuild <- atomicModifyIORef' pendingRebuildRef (\pending -> (False, pending))
-                when pendingRebuild queueRebuild
-                return False
-              finishSwap = do
-                childCount <- length <$> Gtk.containerGetChildren tray
-                forM_ oldTray $ \existingTray -> do
-                  Gtk.containerRemove trayContainer existingTray
-                  Gtk.widgetDestroy existingTray
-                Gtk.boxPackStart trayContainer tray False False 0
-                writeIORef trayRef (Just tray)
-                void $ refreshTray tray
-                Gtk.widgetShow tray
-                writeIORef rebuildInProgressRef False
-                installUpdateHandler
-                pendingRebuild <- atomicModifyIORef' pendingRebuildRef (\pending -> (False, pending))
-                prioritizedTrayLog INFO $
-                  printf
-                    "Finished prioritized tray rebuild #%d; childCount=%d expected=%d pendingRebuild=%s"
-                    rebuildSequence
-                    childCount
-                    expectedChildCount
-                    (show pendingRebuild)
-                when pendingRebuild queueRebuild
-                return False
-              waitForPopulation = do
-                childCount <- length <$> Gtk.containerGetChildren tray
-                attempts <- readIORef waitAttemptsRef
-                pendingRebuild <- readIORef pendingRebuildRef
-                if pendingRebuild
-                  then cancelSwapAndRebuild
-                  else
-                    if childCount < expectedChildCount && attempts < 50
-                      then do
-                        when (attempts == 0 || attempts == 49) $
-                          prioritizedTrayLog DEBUG $
-                            printf
-                              "Waiting for prioritized tray rebuild #%d population; attempt=%d childCount=%d expected=%d"
-                              rebuildSequence
-                              attempts
-                              childCount
-                              expectedChildCount
-                        writeIORef waitAttemptsRef (attempts + 1)
-                        return True
-                      else finishSwap
-          void $
-            Gdk.threadsAddIdle GLib.PRIORITY_DEFAULT waitForPopulation
-
-    writeIORef rebuildTrayRef rebuildTray
-
     _ <- Gtk.onWidgetButtonPressEvent settingsToggle $ \event -> do
       eventType <- Gdk.getEventButtonType event
       button <- Gdk.getEventButtonButton event
@@ -1146,7 +1032,7 @@ sniTrayPrioritizedCollapsibleNewFromHostParams PrioritizedCollapsibleSNITrayPara
             maxVisibleIconsRef
             visibilityThresholdRef
             (refreshPriorityModeToggle >> void refresh)
-            (persistCurrentState >> void refresh)
+            (persistCurrentState >> scheduleRefresh False False H.ToolTipUpdated)
           return True
         else return False
 
@@ -1162,12 +1048,14 @@ sniTrayPrioritizedCollapsibleNewFromHostParams PrioritizedCollapsibleSNITrayPara
                 H.removeUpdateHandler host handlerId
             )
 
-    -- Build once before installing the replaying host handler. The rebuild is
-    -- asynchronous, so the handler must wait until the first tray swap
-    -- completes; otherwise the initial ItemAdded replay can mark a pending
-    -- rebuild while the first tray is still populating and force a full
-    -- duplicate rebuild of the same items.
-    rebuildTray
+    orderedInfos <- updateOrderedInfos True
+    priorities <- readIORef prioritiesRef
+    processKeyMap <- readIORef processDisambiguationKeysRef
+    tray <- buildTrayWithPriorities priorities processKeyMap orderedInfos
+    Gtk.boxPackStart trayContainer tray False False 0
+    writeIORef trayRef (Just tray)
+    installUpdateHandler
+    Gtk.widgetShow tray
 
     Gtk.widgetShowAll outer
     refreshPriorityModeToggle
