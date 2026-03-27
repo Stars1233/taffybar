@@ -37,6 +37,7 @@ library:
     - gi-gdk3 >= 3.0 && < 3.1
     - gi-gdkpixbuf >= 2.0.16 && < 2.1
     - gi-glib >= 2.0 && < 2.1
+    - gi-gobject >= 2.0 && < 2.1
     - gi-gtk3 >= 3.0 && < 3.1
     - gtk-scaling-image >= 0.1 && < 0.2
     - gtk-strut >= 0.1.4 && < 0.2

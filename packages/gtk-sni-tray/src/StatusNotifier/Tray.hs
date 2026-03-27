@@ -29,10 +29,19 @@ import Data.Ratio
 import qualified Data.Text as T
 import Data.Unique (hashUnique, newUnique)
 import Data.Word
-import Foreign.Ptr (Ptr)
+import Foreign.Ptr (Ptr, nullPtr)
+import Foreign.StablePtr
+  ( StablePtr,
+    castPtrToStablePtr,
+    castStablePtrToPtr,
+    deRefStablePtr,
+    freeStablePtr,
+    newStablePtr,
+  )
 import qualified GI.DbusmenuGtk3.Objects.Menu as DM
 import qualified GI.GLib as GLib
 import GI.GLib.Structs.Bytes
+import qualified GI.GObject as GObject
 import qualified GI.Gdk as Gdk
 import GI.Gdk.Enums
 import GI.Gdk.Structs.EventScroll
@@ -257,6 +266,47 @@ data TrayItemMatcher = TrayItemMatcher
 data TrayPriorityConfig = TrayPriorityConfig
   { trayPriorityMatchers :: [TrayItemMatcher]
   }
+
+trayItemIdentityKey :: T.Text
+trayItemIdentityKey = "status-notifier.tray.item-identity"
+
+trayItemIdentity :: ItemInfo -> String
+trayItemIdentity info =
+  show (itemServiceName info) <> "|" <> show (itemServicePath info)
+
+setTrayItemIdentity :: Gtk.EventBox -> ItemInfo -> IO ()
+setTrayItemIdentity widget info = do
+  sp <- newStablePtr (trayItemIdentity info)
+  GObject.objectSetDataFull
+    widget
+    trayItemIdentityKey
+    (castStablePtrToPtr sp :: Ptr ())
+    (Just $ \p -> freeStablePtr (castPtrToStablePtr p :: StablePtr String))
+
+getTrayItemIdentity :: Gtk.Widget -> IO (Maybe String)
+getTrayItemIdentity widget = do
+  p <- GObject.objectGetData widget trayItemIdentityKey
+  if p == nullPtr
+    then pure Nothing
+    else Just <$> deRefStablePtr (castPtrToStablePtr p :: StablePtr String)
+
+reorderTrayChildrenByIdentities :: Gtk.Box -> [String] -> IO ()
+reorderTrayChildrenByIdentities trayBox orderedIdentities = do
+  currentChildren <- Gtk.containerGetChildren trayBox
+  let identityOrder = Map.fromList (zip orderedIdentities [0 :: Int ..])
+      fallbackOrder = length orderedIdentities
+  childRows <- forM (zip [0 :: Int ..] currentChildren) $ \(currentIndex, child) -> do
+    identity <- getTrayItemIdentity child
+    let desiredIndex =
+          fromMaybe
+            (fallbackOrder + currentIndex)
+            (identity >>= (`Map.lookup` identityOrder))
+    pure (desiredIndex, currentIndex, child)
+  let sortedChildren =
+        sortOn (\(desiredIndex, currentIndex, _) -> (desiredIndex, currentIndex)) childRows
+  forM_ (zip [0 :: Int ..] sortedChildren) $
+    \(newIndex, (_, _, child)) ->
+      Gtk.boxReorderChild trayBox child (fromIntegral newIndex)
 
 defaultTrayPriorityConfig :: TrayPriorityConfig
 defaultTrayPriorityConfig = TrayPriorityConfig {trayPriorityMatchers = []}
@@ -647,6 +697,7 @@ buildTray
                             return (iconWidget, setIconFromInfo)
 
                         Gtk.containerAdd eventBox iconWidget
+                        setTrayItemIdentity eventBox info
                         setTooltipText eventBox info
 
                         let context =
