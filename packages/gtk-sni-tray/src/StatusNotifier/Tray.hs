@@ -304,9 +304,12 @@ reorderTrayChildrenByIdentities trayBox orderedIdentities = do
     pure (desiredIndex, currentIndex, child)
   let sortedChildren =
         sortOn (\(desiredIndex, currentIndex, _) -> (desiredIndex, currentIndex)) childRows
-  forM_ (zip [0 :: Int ..] sortedChildren) $
-    \(newIndex, (_, _, child)) ->
-      Gtk.boxReorderChild trayBox child (fromIntegral newIndex)
+      currentOrder = map (\(_, _, child) -> child) childRows
+      desiredOrder = map (\(_, _, child) -> child) sortedChildren
+  unless (currentOrder == desiredOrder) $
+    forM_ (zip [0 :: Int ..] sortedChildren) $
+      \(newIndex, (_, _, child)) ->
+        Gtk.boxReorderChild trayBox child (fromIntegral newIndex)
 
 defaultTrayPriorityConfig :: TrayPriorityConfig
 defaultTrayPriorityConfig = TrayPriorityConfig {trayPriorityMatchers = []}
@@ -577,28 +580,14 @@ buildTray
               (findIndex (\matcher -> trayItemMatcherPredicate matcher info) priorityMatchers)
 
           reorderTrayByPriority = when (not (null priorityMatchers)) $ do
-            currentChildren <- Gtk.containerGetChildren trayBox
-            contexts <- ContextMap.readyContexts <$> MV.readMVar contextMap
-            contextWidgets <- forM (Map.toList contexts) $
-              \(busName, ItemContext {contextButton = button}) -> do
-                widget <- Gtk.toWidget button
-                return (busName, widget)
             infoMap <- getInfoMap
-            let childRows =
-                  [ let busName = fst <$> find (\(_, widget) -> widget == child) contextWidgets
-                        itemInfo = busName >>= (`Map.lookup` infoMap)
-                        priority = maybe (length priorityMatchers) getPriorityIndex itemInfo
-                     in (priority, currentIndex, child)
-                  | (currentIndex, child) <- zip [0 :: Int ..] currentChildren
-                  ]
-                sortedChildren =
-                  [ child
-                  | (_, _, child) <-
-                      sortOn (\(priority, currentIndex, _) -> (priority, currentIndex)) childRows
-                  ]
-            forM_ (zip [0 :: Int ..] sortedChildren) $
-              \(newIndex, child) ->
-                Gtk.boxReorderChild trayBox child (fromIntegral newIndex)
+            let orderedInfos =
+                  sortOn
+                    (\info -> (getPriorityIndex info, trayItemIdentity info))
+                    (Map.elems infoMap)
+            reorderTrayChildrenByIdentities
+              trayBox
+              (map trayItemIdentity orderedInfos)
 
           applyTransform :: Gtk.Widget -> Maybe Pixbuf -> IO (Maybe Pixbuf)
           applyTransform _ Nothing = return Nothing

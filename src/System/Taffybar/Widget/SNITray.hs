@@ -35,7 +35,7 @@ module System.Taffybar.Widget.SNITray
   )
 where
 
-import Control.Monad (void)
+import Control.Monad (forM_, void, when)
 import Control.Monad.Trans.Class
 import Control.Monad.Trans.Reader
 import Data.IORef
@@ -227,9 +227,7 @@ sniTrayCollapsibleNewFromHostParams CollapsibleSNITrayParams {..} host = do
               visibleCount
                 | shouldLimit && not expanded = max 0 collapsedVisibleCount
                 | otherwise = length children
-              visibleChildren = take visibleCount children
-              hiddenChildren = drop visibleCount children
-              hiddenCount = length hiddenChildren
+              hiddenCount = max 0 (length children - visibleCount)
               showIndicator
                 | expanded =
                     shouldLimit
@@ -239,8 +237,13 @@ sniTrayCollapsibleNewFromHostParams CollapsibleSNITrayParams {..} host = do
               indicatorText =
                 collapsibleSNITrayIndicatorLabel hiddenCount expanded
 
-          mapM_ Gtk.widgetShow visibleChildren
-          mapM_ Gtk.widgetHide hiddenChildren
+          forM_ (zip [0 :: Int ..] children) $ \(childIndex, child) -> do
+            let shouldShow = childIndex < visibleCount
+            isVisible <- Gtk.widgetGetVisible child
+            when (isVisible /= shouldShow) $
+              if shouldShow
+                then Gtk.widgetShow child
+                else Gtk.widgetHide child
 
           if showIndicator
             then do

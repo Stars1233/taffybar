@@ -930,13 +930,16 @@ sniTrayPrioritizedCollapsibleNewFromHostParams PrioritizedCollapsibleSNITrayPara
               visibleCount
                 | expanded = totalCount
                 | otherwise = collapsedVisibleCount
-              visibleChildren = take visibleCount children
-              hiddenChildren = drop visibleCount children
-              hiddenCount = length hiddenChildren
+              hiddenCount = max 0 (totalCount - visibleCount)
               hiddenCountText = T.pack (show hiddenCount)
 
-          mapM_ Gtk.widgetShow visibleChildren
-          mapM_ Gtk.widgetHide hiddenChildren
+          forM_ (zip [0 :: Int ..] children) $ \(childIndex, child) -> do
+            let shouldShow = childIndex < visibleCount
+            isVisible <- Gtk.widgetGetVisible child
+            when (isVisible /= shouldShow) $
+              if shouldShow
+                then Gtk.widgetShow child
+                else Gtk.widgetHide child
           writeIORef hiddenCountRef hiddenCount
 
           if hiddenCount > 0
