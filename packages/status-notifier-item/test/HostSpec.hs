@@ -262,7 +262,8 @@ spec = around withIsolatedSessionBus $ do
       hostClient <- connectSession
       Just host <- build defaultParams {dbusClient = Just hostClient, uniqueIdentifier = "host-h3"}
 
-      let makeIface title iconName =
+      let makeIface :: String -> String -> Interface
+          makeIface title iconName =
             Interface
               { interfaceName = "org.kde.StatusNotifierItem",
                 interfaceMethods = [],
