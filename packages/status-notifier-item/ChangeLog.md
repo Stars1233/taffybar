@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.3.2.12 - 2026-03-30
+- Fix the `HostSpec` test helper's overloaded-string inference so the test
+  suite builds cleanly with newer GHC/`dbus` combinations, restoring the
+  status-notifier-item Stackage nightly upgrade path.
+
 ## 0.3.2.11 - 2026-03-29
 - Watcher: accept explicit SNI registrations initiated from a separate unique
   bus name owned by the same process, fixing KDE/Qt multi-connection
