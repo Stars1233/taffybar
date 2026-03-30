@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.2.1.1
+
+- Require `status-notifier-item >= 0.3.2.13` so tray consumers pick up the
+  host-side suppression of redundant no-op property update churn.
+
 ## 0.2.1.0
 
 - Move prioritized tray controls into the tray menu instead of separate inline

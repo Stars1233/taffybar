@@ -1,6 +1,6 @@
 cabal-version: 3.4
 name: taffybar
-version: 7.0.0
+version: 7.0.1
 synopsis: A desktop bar similar to xmobar, but with more GUI
 license: BSD-3-Clause
 license-file: LICENSE
@@ -87,7 +87,7 @@ library
                , gi-gtk-hs >= 0.3.17 && < 0.4
                , gi-pango
                , gtk-scaling-image >= 0.1.0.0 && < 0.2
-               , gtk-sni-tray >= 0.2.1.0
+               , gtk-sni-tray >= 0.2.1.1
                , gtk-strut >= 0.1.4.0
                , haskell-gi-base >= 0.24
                , hslogger
@@ -104,7 +104,7 @@ library
                , safe >= 0.3 && < 1
                , scotty >= 0.20 && < 0.31
                , split >= 0.1.4.2
-               , status-notifier-item >= 0.3.2.11
+               , status-notifier-item >= 0.3.2.13
                , stm
                , template-haskell
                , text

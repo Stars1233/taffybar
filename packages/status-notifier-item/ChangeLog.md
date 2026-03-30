@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.3.2.13 - 2026-03-30
+- Host: suppress no-op property update notifications when a signal arrives but
+  the refreshed item value is unchanged, avoiding redundant tray updates.
+- Add a regression test covering unchanged-vs-changed `NewTitle` updates.
+
 ## 0.3.2.12 - 2026-03-30
 - Fix the `HostSpec` test helper's overloaded-string inference so the test
   suite builds cleanly with newer GHC/`dbus` combinations, restoring the

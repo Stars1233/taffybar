@@ -532,9 +532,15 @@ build
         updateItemByLensAndProp lens prop busName = runExceptT $ do
           newValue <- ExceptT (runProperty prop busName)
           let modify infoMap =
-                -- This noops when the value is not present
-                let newMap = set (at busName . _Just . lens) newValue infoMap
-                 in return (newMap, Map.lookup busName newMap)
+                case Map.lookup busName infoMap of
+                  Nothing -> return (infoMap, Nothing)
+                  Just oldInfo ->
+                    let newInfo = set lens newValue oldInfo
+                     in if newInfo == oldInfo
+                          then return (infoMap, Just Nothing)
+                          else
+                            let newMap = Map.insert busName newInfo infoMap
+                             in return (newMap, Just $ Just newInfo)
           ExceptT $
             maybeToEither (methodError (Serial 0) errorFailed)
               <$> modifyMVar itemInfoMapVar modify
@@ -546,9 +552,9 @@ build
         -- will succeed.
         runUpdatersForService updaters updateType serviceName = do
           updateResults <- mapM ($ serviceName) updaters
-          let (failures, updates) = partitionEithers updateResults
-              logLevel = propertyUpdateFailureLogLevel failures updates
-          mapM_ (doUpdate updateType) updates
+          let (failures, successes) = partitionEithers updateResults
+              logLevel = propertyUpdateFailureLogLevel failures successes
+          mapM_ (doUpdate updateType) $ catMaybes successes
           when (not $ null failures) $
             hostLogger logLevel $
               printf "Property update failures %s" $

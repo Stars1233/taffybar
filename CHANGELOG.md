@@ -6,6 +6,19 @@
   rendering, and move shared workspace/window support helpers out of widget
   modules.
 
+# 7.0.1
+
+## Tray
+
+* Avoid prioritized-collapsible tray rebuilds for overlay-icon, tooltip, and
+  status-only updates that do not affect visible tray content.
+
+## Packaging
+
+* Require `gtk-sni-tray >= 0.2.1.1` and `status-notifier-item >= 0.3.2.13`
+  so tray consumers pick up the host-side suppression of redundant no-op
+  property update churn.
+
 # 7.0.0
 
 ## Breaking Changes

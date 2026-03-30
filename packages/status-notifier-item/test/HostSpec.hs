@@ -6,8 +6,11 @@ import Control.Concurrent
   ( forkIO,
     newChan,
     newEmptyMVar,
+    newMVar,
     putMVar,
     readChan,
+    readMVar,
+    swapMVar,
     takeMVar,
     threadDelay,
     tryPutMVar,
@@ -15,7 +18,7 @@ import Control.Concurrent
   )
 import Control.Exception (finally)
 import Control.Monad (replicateM, void)
-import DBus (busName_, objectPath_)
+import DBus (busName_, interfaceName_, memberName_, objectPath_, signal)
 import DBus.Client
 import qualified DBus.Internal.Message as M
 import DBus.Internal.Types (ErrorName, Serial (..), errorName_)
@@ -370,6 +373,55 @@ spec = around withIsolatedSessionBus $ do
       first `shouldBe` Just (ItemAdded, busName_ itemName)
       second <- timeout 300000 (readChan events)
       second `shouldBe` Nothing
+
+      _ <- releaseName itemClient (busName_ itemName)
+      pure ()
+
+    it "suppresses property update signals when the item value is unchanged" $ \() -> do
+      _watcher <- startWatcher
+      hostClient <- connectSession
+      Just host <- build defaultParams {dbusClient = Just hostClient, uniqueIdentifier = "host-k"}
+
+      let itemName = "org.test.HostNoopTitleUpdate"
+      titleVar <- newMVar ("Initial Title" :: String)
+      itemClient <- connectSession
+      let emitNewTitle =
+            emit itemClient $
+              signal
+                (objectPath_ defaultPath)
+                (interfaceName_ "org.kde.StatusNotifierItem")
+                (memberName_ "NewTitle")
+          iface =
+            Interface
+              { interfaceName = "org.kde.StatusNotifierItem",
+                interfaceMethods = [],
+                interfaceProperties =
+                  [ readOnlyProperty "Title" (readMVar titleVar),
+                    readOnlyProperty "IconName" (pure ("folder" :: String)),
+                    readOnlyProperty "OverlayIconName" (pure ("" :: String)),
+                    readOnlyProperty "ItemIsMenu" (pure False)
+                  ],
+                interfaceSignals = []
+              }
+      export itemClient (objectPath_ defaultPath) iface
+      _ <- requestName itemClient (busName_ itemName) []
+      WatcherClient.registerStatusNotifierItem itemClient itemName
+        `shouldReturn` Right ()
+
+      events <- newChan
+      _ <- addUpdateHandler host (\ut info -> writeChan events (ut, iconTitle info))
+
+      added <- timeout 1500000 (readChan events)
+      added `shouldBe` Just (ItemAdded, "Initial Title")
+
+      emitNewTitle
+      unchanged <- timeout 300000 (readChan events)
+      unchanged `shouldBe` Nothing
+
+      _ <- swapMVar titleVar "Updated Title"
+      emitNewTitle
+      updated <- timeout 1500000 (readChan events)
+      updated `shouldBe` Just (TitleUpdated, "Updated Title")
 
       _ <- releaseName itemClient (busName_ itemName)
       pure ()

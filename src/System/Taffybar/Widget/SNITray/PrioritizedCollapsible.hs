@@ -966,7 +966,11 @@ sniTrayPrioritizedCollapsibleNewFromHostParams PrioritizedCollapsibleSNITrayPara
           case updateType of
             H.ItemAdded -> scheduleRefresh True True updateType
             H.ItemRemoved -> scheduleRefresh True True updateType
-            _ -> scheduleRefresh False False updateType
+            H.IconUpdated -> scheduleRefresh False False updateType
+            H.TitleUpdated -> scheduleRefresh False False updateType
+            H.OverlayIconUpdated -> return ()
+            H.ToolTipUpdated -> return ()
+            H.StatusUpdated -> return ()
 
         installUpdateHandler = do
           maybeHandlerId <- readIORef updateHandlerRef
