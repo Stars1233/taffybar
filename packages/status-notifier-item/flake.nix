@@ -1,8 +1,12 @@
 {
   description = "status-notifier-item";
   inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
-    git-ignore-nix.url = github:hercules-ci/gitignore.nix/master;
+    git-ignore-nix = {
+      url = "github:hercules-ci/gitignore.nix/master";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
   outputs = { self, flake-utils, nixpkgs, git-ignore-nix }:
   let
@@ -17,9 +21,8 @@
         });
       });
     };
-    overlays = [ overlay ];
   in flake-utils.lib.eachDefaultSystem (system:
-  let pkgs = import nixpkgs { inherit system overlays; config.allowBroken = true; };
+  let pkgs = import nixpkgs { inherit system; overlays = [ overlay ]; config.allowBroken = true; };
   in
   rec {
     devShell = pkgs.haskellPackages.shellFor {
@@ -29,5 +32,8 @@
       ];
     };
     defaultPackage = pkgs.haskellPackages.status-notifier-item;
-  }) // { inherit overlay overlays; } ;
+  }) // {
+    inherit overlay;
+    overlays.default = overlay;
+  };
 }

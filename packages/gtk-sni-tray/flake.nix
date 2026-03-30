@@ -8,13 +8,13 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     status-notifier-item = {
-      url = "github:taffybar/status-notifier-item";
+      url = "path:../status-notifier-item";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.git-ignore-nix.follows = "git-ignore-nix";
       inputs.flake-utils.follows = "flake-utils";
     };
     gtk-strut = {
-      url = "github:taffybar/gtk-strut";
+      url = "path:../gtk-strut";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.git-ignore-nix.follows = "git-ignore-nix";
       inputs.flake-utils.follows = "flake-utils";
@@ -26,7 +26,7 @@
       inputs.flake-utils.follows = "flake-utils";
     };
     dbus-menu = {
-      url = "github:taffybar/dbus-menu";
+      url = "path:../dbus-menu";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.git-ignore-nix.follows = "git-ignore-nix";
       inputs.flake-utils.follows = "flake-utils";
