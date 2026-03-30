@@ -6,13 +6,50 @@
   rendering, and move shared workspace/window support helpers out of widget
   modules.
 
+# 7.0.0
+
+## Breaking Changes
+
+* Remove the deprecated `System.Taffybar.Information.CPU` shim; use
+  `System.Taffybar.Information.CPU2` instead.
+
+## New Features
+
+* Add `System.Taffybar.Widget.CoordinatedClock`, a shared wakeup-backed clock
+  helper for coordinated time-based updates.
+* Add label setup hooks for `MPRIS2` and `Windows` widgets so callers can
+  customize label widgets after construction.
+* Add `.graph-label` styling support for graph overlay labels and make overlay
+  labels pass pointer events through to the underlying graph.
+
+## Tray
+
+* Move prioritized collapsible tray controls into the tray menu and auto-fit
+  tray icons within the available space.
+* Reduce prioritized/collapsible tray churn by deferring visibility until
+  state is ready, preserving item identities, refreshing in place, and dropping
+  stale rebuilds before swapping.
+* Fix tray flicker and async menu regressions, prevent duplicate tray contexts
+  during async initialization, eliminate duplicate startup icons, and avoid
+  routine update churn.
+* Improve `status-notifier-item` reconciliation so logical tray items are
+  deduplicated across bus-name churn, including KDE/Qt multi-connection
+  registrations.
 
 ## Fixes
 
 * Switch `System.Taffybar.Information.CPU2.getCPULoadChan` to coordinated
   wakeups and run CPU widgets on the shared wakeup scheduler.
-* Extract shared pixbuf scaling and auto-fill image helpers into the new
-  `gtk-scaling-image` package.
+* Fix `MPRIS2` updates so widget visibility and CSS class changes happen in the
+  same GTK sync.
+* Watch XMonad visible-workspace updates so EWMH workspace state stays current
+  after visibility changes.
+
+## Packaging
+
+* Build against monorepo-local companion packages and extract shared pixbuf
+  scaling and auto-fill image helpers into the new `gtk-scaling-image`
+  package.
 
 # 6.0.0
 
@@ -733,4 +770,4 @@ The `XMonadLog` module is deprecated.  This module let taffybar display XMonad d
 
  * Readable widget for freedesktop notifications
  * Fixed a few potential deadlocks on startup
- * Use the GTK+ rc-file styling system for colors instead of hard coding them
+ * Use the GTK+ rc-file styling system for colors instead

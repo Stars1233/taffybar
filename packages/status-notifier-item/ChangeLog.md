@@ -1,10 +1,24 @@
 # Changelog for status-notifier-item
 
+## Unreleased
+
+## 0.3.2.11 - 2026-03-29
+- Watcher: accept explicit SNI registrations initiated from a separate unique
+  bus name owned by the same process, fixing KDE/Qt multi-connection
+  registrations.
+- Host: deduplicate logical items across bus-name churn so tray hosts keep a
+  single logical icon when senders change identity.
+- Add regression tests for the multi-connection registration and bus-name churn
+  deduplication cases.
+
 ## 0.3.2.10 - 2026-02-17
 - Relax upper bounds to restore Stackage nightly compatibility:
   `optparse-applicative < 0.20` and `template-haskell < 2.24`.
 
 ## 0.3.2.9 - 2026-02-17
+- Version bump only; no library changes beyond `0.3.2.8`.
+
+## 0.3.2.8 - 2026-02-17
 - Host: eliminate duplicate `ItemAdded` deliveries to newly-registered update
   handlers by making handler registration + initial replay atomic with respect
   to item map updates.

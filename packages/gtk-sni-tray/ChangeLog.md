@@ -1,7 +1,22 @@
 # Changelog for gtk-sni-tray
 
+## Unreleased
+
 ## 0.2.1.0
 
+- Move prioritized tray controls into the tray menu instead of separate inline
+  buttons.
+- Auto-fit tray icons and defer prioritized-collapsible tray visibility until
+  tray state is ready.
+- Fix tray flicker and async menu regressions in prioritized/collapsible tray
+  updates.
+- Prevent duplicate tray contexts during async initialization and eliminate
+  duplicate tray icons on startup.
+- Preserve tray item identities across refreshes, refresh prioritized trays in
+  place, drop stale rebuilds before swapping, and avoid routine tray churn on
+  normal updates.
+- Require `status-notifier-item >= 0.3.2.11` for the logical item
+  deduplication fixes used by the tray stack.
 - Extract generic pixbuf scaling and auto-fill image helpers into the new
   `gtk-scaling-image` package.
 

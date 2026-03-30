@@ -60,7 +60,7 @@ library
     , haskell-gi >=0.21.2 && <0.27
     , haskell-gi-base >=0.21.1 && <0.27
     , hslogger >=1.2 && <1.4
-    , status-notifier-item >=0.3.2 && <0.4
+    , status-notifier-item >=0.3.2.11 && <0.4
     , text >=1.2 && <2.2
     , transformers >=0.4 && <0.7
     , transformers-base ==0.4.*
@@ -94,6 +94,9 @@ executable gtk-sni-tray-standalone
 test-suite gtk-sni-tray-test
   type: exitcode-stdio-1.0
   main-is: Main.hs
+  other-modules:
+      ContextMapSpec
+      Paths_gtk_sni_tray
   hs-source-dirs:
       test
   build-depends:
