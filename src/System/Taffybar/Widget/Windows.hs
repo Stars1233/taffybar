@@ -47,15 +47,15 @@ import System.Taffybar.Information.Workspaces.Hyprland
   ( getHyprlandWorkspaceStateChanAndVar,
   )
 import System.Taffybar.Information.Workspaces.Model
-import System.Taffybar.Util
-import System.Taffybar.Widget.Generic.ChannelWidget (channelWidgetNew)
-import System.Taffybar.Widget.Generic.ScalingImage (scalingImage)
-import System.Taffybar.Widget.Util (widgetSetClassGI)
-import System.Taffybar.Widget.Workspaces
+import System.Taffybar.Information.Workspaces.Support
   ( defaultOnWindowClick,
     getWindowIconPixbufByClassHints,
     sortWindowsByPosition,
   )
+import System.Taffybar.Util
+import System.Taffybar.Widget.Generic.ChannelWidget (channelWidgetNew)
+import System.Taffybar.Widget.Generic.ScalingImage (scalingImage)
+import System.Taffybar.Widget.Util (widgetSetClassGI)
 
 -- | Behavior configuration for the windows menu widget.
 data WindowsConfig = WindowsConfig

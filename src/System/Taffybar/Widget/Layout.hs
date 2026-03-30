@@ -13,10 +13,9 @@
 -- Stability   : unstable
 -- Portability : unportable
 --
--- Simple text widget that shows the XMonad layout used in the currently active
--- workspace, and that allows to change it by clicking with the mouse:
--- left-click to switch to the next layout in the list, right-click to switch to
--- the first one (as configured in @xmonad.hs@)
+-- Simple text widget that shows the current layout using a backend-specific
+-- information provider. Under X11/XMonad it retains the historical click
+-- behavior for layout switching.
 module System.Taffybar.Widget.Layout
   ( -- * Usage
     -- $usage
@@ -26,6 +25,10 @@ module System.Taffybar.Widget.Layout
   )
 where
 
+import qualified Control.Concurrent.MVar as MV
+import Control.Concurrent.STM.TChan (TChan)
+import Control.Monad (void)
+import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Class
 import Control.Monad.Trans.Reader
 import Data.Default (Default (..))
@@ -33,8 +36,16 @@ import qualified Data.Text as T
 import GI.Gdk
 import qualified GI.Gtk as Gtk
 import System.Taffybar.Context
-import System.Taffybar.Information.X11DesktopInfo
+import System.Taffybar.Information.Layout.EWMH
+  ( getEWMHLayoutStateChanAndVar,
+    switchEWMHLayoutBy,
+  )
+import System.Taffybar.Information.Layout.Hyprland
+  ( getHyprlandLayoutStateChanAndVar,
+  )
+import System.Taffybar.Information.Layout.Model
 import System.Taffybar.Util
+import System.Taffybar.Widget.Generic.ChannelWidget (channelWidgetNew)
 import System.Taffybar.Widget.Util
 
 -- $usage
@@ -68,54 +79,53 @@ defaultLayoutConfig = LayoutConfig return
 instance Default LayoutConfig where
   def = defaultLayoutConfig
 
--- | Name of the X11 events to subscribe, and of the hint to look for for
--- the name of the current layout.
-xLayoutProp :: String
-xLayoutProp = "_XMONAD_CURRENT_LAYOUT"
-
--- | Create a new Layout widget that will use the given Pager as
--- its source of events.
 layoutNew :: LayoutConfig -> TaffyIO Gtk.Widget
 layoutNew config = do
   ctx <- ask
+  backendType <- asks backend
+  (stateChan, stateVar) <- autoLayoutStateSource
+  initialSnapshot <- liftIO $ MV.readMVar stateVar
   label <- lift $ Gtk.labelNew (Nothing :: Maybe T.Text)
   _ <- widgetSetClassGI label "layout-label"
 
-  -- This callback is run in a separate thread and needs to use
-  -- postGUIASync
-  let callback _ = mapReaderT postGUIASync $ do
-        layout <- runX11Def "" $ readAsString Nothing xLayoutProp
-        markup <- formatLayout config (T.pack layout)
+  let renderSnapshot snapshot = do
+        markup <- formatLayout config (layoutName snapshot)
         lift $ Gtk.labelSetMarkup label markup
 
-  subscription <- subscribeToPropertyEvents [xLayoutProp] callback
+  void $ renderSnapshot initialSnapshot
 
-  do
-    ebox <- Gtk.eventBoxNew
-    Gtk.containerAdd ebox label
-    _ <- Gtk.onWidgetButtonPressEvent ebox $ dispatchButtonEvent ctx
-    Gtk.widgetShowAll ebox
-    _ <- Gtk.onWidgetUnrealize ebox $ flip runReaderT ctx $ unsubscribe subscription
-    Gtk.toWidget ebox
+  ebox <- lift Gtk.eventBoxNew
+  lift $ Gtk.containerAdd ebox label
+  _ <- liftIO $ Gtk.onWidgetRealize ebox $ do
+    latestSnapshot <- MV.readMVar stateVar
+    void $ runReaderT (renderSnapshot latestSnapshot) ctx
+  _ <-
+    liftIO $
+      channelWidgetNew
+        ebox
+        stateChan
+        (\snapshot -> postGUIASync $ runReaderT (renderSnapshot snapshot) ctx)
+  _ <- lift $ Gtk.onWidgetButtonPressEvent ebox $ dispatchButtonEvent ctx backendType
+  lift $ Gtk.widgetShowAll ebox
+  Gtk.toWidget ebox
 
--- | Call 'switch' with the appropriate argument (1 for left click, -1 for
--- right click), depending on the click event received.
-dispatchButtonEvent :: Context -> EventButton -> IO Bool
-dispatchButtonEvent context btn = do
+autoLayoutStateSource :: TaffyIO (TChan LayoutSnapshot, MV.MVar LayoutSnapshot)
+autoLayoutStateSource = do
+  backendType <- asks backend
+  case backendType of
+    BackendWayland -> getHyprlandLayoutStateChanAndVar
+    BackendX11 -> getEWMHLayoutStateChanAndVar
+
+dispatchButtonEvent :: Context -> Backend -> EventButton -> IO Bool
+dispatchButtonEvent context backendType btn = do
   pressType <- getEventButtonType btn
   buttonNumber <- getEventButtonButton btn
   case pressType of
-    EventTypeButtonPress ->
-      case buttonNumber of
-        1 -> runReaderT (runX11Def () (switch 1)) context >> return True
-        2 -> runReaderT (runX11Def () (switch (-1))) context >> return True
-        _ -> return False
+    EventTypeButtonPress -> case backendType of
+      BackendWayland -> return False
+      BackendX11 ->
+        case buttonNumber of
+          1 -> runReaderT (runX11Def () (switchEWMHLayoutBy 1)) context >> return True
+          2 -> runReaderT (runX11Def () (switchEWMHLayoutBy (-1))) context >> return True
+          _ -> return False
     _ -> return False
-
--- | Emit a new custom event of type _XMONAD_CURRENT_LAYOUT, that can be
--- intercepted by the PagerHints hook, which in turn can instruct XMonad to
--- switch to a different layout.
-switch :: Int -> X11Property ()
-switch n = do
-  cmd <- getAtom xLayoutProp
-  sendCommandEvent cmd (fromIntegral n)

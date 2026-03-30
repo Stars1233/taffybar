@@ -1,5 +1,12 @@
 # Unreleased
 
+## Refactors
+
+* Decouple layout and workspace/window information providers from widget
+  rendering, and move shared workspace/window support helpers out of widget
+  modules.
+
+
 ## Fixes
 
 * Switch `System.Taffybar.Information.CPU2.getCPULoadChan` to coordinated

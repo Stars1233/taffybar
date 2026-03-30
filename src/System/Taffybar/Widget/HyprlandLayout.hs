@@ -22,32 +22,34 @@ module System.Taffybar.Widget.HyprlandLayout
   )
 where
 
-import Control.Applicative ((<|>))
-import Control.Concurrent (killThread)
+import qualified Control.Concurrent.MVar as MV
+import Control.Concurrent.STM.TChan (TChan)
 import Control.Monad (void)
+import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Class
 import Control.Monad.Trans.Reader
-import Data.Aeson (FromJSON (..), withObject, (.:?))
 import Data.Default (Default (..))
-import Data.Maybe (fromMaybe)
-import Data.Text (Text)
 import qualified Data.Text as T
 import GI.Gdk
 import qualified GI.Gtk as Gtk
 import System.Log.Logger (Priority (..))
 import System.Taffybar.Context
 import System.Taffybar.Hyprland
-  ( runHyprlandCommandJsonT,
-    runHyprlandCommandRawT,
+  ( runHyprlandCommandRawT,
   )
 import qualified System.Taffybar.Information.Hyprland as Hypr
-import System.Taffybar.Information.Wakeup (taffyForeverWithDelay)
+import System.Taffybar.Information.Layout.Hyprland
+  ( getHyprlandLayoutStateChanAndVar,
+  )
+import System.Taffybar.Information.Layout.Model
 import System.Taffybar.Util
+import System.Taffybar.Widget.Generic.ChannelWidget (channelWidgetNew)
 import System.Taffybar.Widget.Util
 
 -- | Configuration for 'hyprlandLayoutNew'.
 data HyprlandLayoutConfig = HyprlandLayoutConfig
   { formatLayout :: T.Text -> TaffyIO T.Text,
+    -- | Retained for API compatibility; the widget is now event-driven.
     updateIntervalSeconds :: Double,
     onLeftClick :: Maybe [String],
     onRightClick :: Maybe [String]
@@ -70,23 +72,34 @@ defaultHyprlandLayoutConfig =
 hyprlandLayoutNew :: HyprlandLayoutConfig -> TaffyIO Gtk.Widget
 hyprlandLayoutNew config = do
   ctx <- ask
+  (stateChan, stateVar) <- hyprlandLayoutStateSource
+  initialSnapshot <- liftIO $ MV.readMVar stateVar
   label <- lift $ Gtk.labelNew (Nothing :: Maybe T.Text)
   _ <- widgetSetClassGI label "layout-label"
 
-  let refresh = do
-        layoutText <- getHyprlandLayoutText
-        markup <- formatLayout config layoutText
-        lift $ postGUIASync $ Gtk.labelSetMarkup label markup
+  let renderSnapshot snapshot = do
+        markup <- formatLayout config (layoutName snapshot)
+        lift $ Gtk.labelSetMarkup label markup
 
-  void refresh
-  threadId <- taffyForeverWithDelay (updateIntervalSeconds config) (void refresh)
+  void $ renderSnapshot initialSnapshot
 
   ebox <- lift Gtk.eventBoxNew
   lift $ Gtk.containerAdd ebox label
+  _ <- liftIO $ Gtk.onWidgetRealize ebox $ do
+    latestSnapshot <- MV.readMVar stateVar
+    void $ runReaderT (renderSnapshot latestSnapshot) ctx
+  _ <-
+    liftIO $
+      channelWidgetNew
+        ebox
+        stateChan
+        (\snapshot -> postGUIASync $ runReaderT (renderSnapshot snapshot) ctx)
   _ <- lift $ Gtk.onWidgetButtonPressEvent ebox $ dispatchButtonEvent ctx config
-  _ <- lift $ Gtk.onWidgetUnrealize ebox $ killThread threadId
   lift $ Gtk.widgetShowAll ebox
   Gtk.toWidget ebox
+
+hyprlandLayoutStateSource :: TaffyIO (TChan LayoutSnapshot, MV.MVar LayoutSnapshot)
+hyprlandLayoutStateSource = getHyprlandLayoutStateChanAndVar
 
 -- | Call the configured dispatch action depending on click.
 dispatchButtonEvent :: Context -> HyprlandLayoutConfig -> EventButton -> IO Bool
@@ -116,40 +129,3 @@ dispatchMaybe maybeArgs =
             "Failed to dispatch Hyprland command: %s"
             (show err)
         Right _ -> return ()
-
--- Hyprland JSON helpers
-
-newtype HyprlandActiveWorkspace = HyprlandActiveWorkspace
-  { hawLayout :: Maybe Text
-  }
-  deriving (Show, Eq)
-
-instance FromJSON HyprlandActiveWorkspace where
-  parseJSON = withObject "HyprlandActiveWorkspace" $ \v -> do
-    layout <- v .:? "layout" <|> v .:? "layoutName" <|> v .:? "layoutname"
-    return $ HyprlandActiveWorkspace layout
-
-getHyprlandLayoutText :: TaffyIO T.Text
-getHyprlandLayoutText = do
-  result <- runHyprctlJson ["-j", "activeworkspace"]
-  case result of
-    Left err ->
-      logPrintF
-        "System.Taffybar.Widget.HyprlandLayout"
-        WARNING
-        "hyprctl activeworkspace failed: %s"
-        err
-        >> return ""
-    Right (HyprlandActiveWorkspace layout) ->
-      return $ fromMaybe "" layout
-
-runHyprctlJson :: (FromJSON a) => [String] -> TaffyIO (Either String a)
-runHyprctlJson args = do
-  let args' =
-        case args of
-          ("-j" : rest) -> rest
-          _ -> args
-  result <- runHyprlandCommandJsonT (Hypr.hyprCommandJson args')
-  pure $ case result of
-    Left err -> Left (show err)
-    Right out -> Right out

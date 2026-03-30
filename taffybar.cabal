@@ -1,6 +1,6 @@
 cabal-version: 3.4
 name: taffybar
-version: 6.0.0
+version: 7.0.0
 synopsis: A desktop bar similar to xmobar, but with more GUI
 license: BSD-3-Clause
 license-file: LICENSE
@@ -67,7 +67,7 @@ library
                , data-default
                , dbus >= 1.2.11 && < 2.0.0
                , dbus-hslogger >= 0.1.1.0 && < 0.2.0.0
-               , dbus-menu >= 0.1.3.0
+               , dbus-menu >= 0.1.3.2
                , directory
                , disk-free-space >= 0.1.0.1
                , dyre >= 0.9.0 && < 0.10
@@ -88,7 +88,7 @@ library
                , gi-pango
                , gtk-scaling-image >= 0.1.0.0 && < 0.2
                , gtk-sni-tray >= 0.2.1.0
-               , gtk-strut >= 0.1.2.1
+               , gtk-strut >= 0.1.4.0
                , haskell-gi-base >= 0.24
                , hslogger
                , http-conduit
@@ -104,7 +104,7 @@ library
                , safe >= 0.3 && < 1
                , scotty >= 0.20 && < 0.31
                , split >= 0.1.4.2
-               , status-notifier-item >= 0.3.2.6
+               , status-notifier-item >= 0.3.2.11
                , stm
                , template-haskell
                , text
@@ -149,6 +149,9 @@ library
                  , System.Taffybar.Information.EWMHDesktopInfo
                  , System.Taffybar.Information.Inhibitor
                  , System.Taffybar.Information.KeyboardState
+                 , System.Taffybar.Information.Layout.EWMH
+                 , System.Taffybar.Information.Layout.Hyprland
+                 , System.Taffybar.Information.Layout.Model
                  , System.Taffybar.Information.MPRIS2
                  , System.Taffybar.Information.Memory
                  , System.Taffybar.Information.Network
@@ -251,6 +254,7 @@ library
                , System.Taffybar.DBus.Client.Util
                , System.Taffybar.Information.Hyprland.API
                , System.Taffybar.Information.Hyprland.Types
+               , System.Taffybar.Information.Workspaces.Support
                , System.Taffybar.Information.Wakeup.Manager
                , System.Taffybar.Information.Udev
                , System.Taffybar.Window.FocusedMonitor
@@ -369,6 +373,8 @@ test-suite unit
                , System.Taffybar.AppearanceSpec
                , System.Taffybar.ContextSpec
                , System.Taffybar.Information.CryptoSpec
+               , System.Taffybar.Information.LayoutSpec
+               , System.Taffybar.Information.Workspaces.EWMHSpec
                , System.Taffybar.Information.X11DesktopInfoSpec
                , System.Taffybar.Information.WakeupSpec
                , System.Taffybar.SimpleConfigSpec
