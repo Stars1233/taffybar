@@ -88,11 +88,12 @@ import qualified DBus as D
 import qualified DBus.Client as DBus
 import Data.Data
 import Data.Default (Default (..))
-import Data.GI.Base.ManagedPtr (unsafeCastTo)
+import Data.GI.Base (castTo)
 import Data.IORef
 import Data.Int
 import Data.List
 import qualified Data.Map as M
+import Data.Maybe (isNothing)
 import qualified Data.Text as T
 import Data.Tuple.Select
 import Data.Tuple.Sequence
@@ -636,13 +637,16 @@ buildBarWindow context barConfig = do
   mapM_ Gtk.widgetShow shownBoxes
 
   when (backend context == BackendX11) $
-    runX11Context context () $
-      void $
+    runX11Context context () $ do
+      lowered <-
         runMaybeT $ do
           gdkWindow <- MaybeT $ Gtk.widgetGetWindow window
-          xid <- GdkX11.x11WindowGetXid =<< liftIO (unsafeCastTo X11Window gdkWindow)
+          x11Window <- MaybeT $ liftIO (castTo X11Window gdkWindow)
+          xid <- liftIO $ GdkX11.x11WindowGetXid x11Window
           logC DEBUG $ printf "Lowering X11 window %s" $ show xid
           lift $ doLowerWindow (fromIntegral xid)
+      when (isNothing lowered) $
+        logC WARNING "Skipping X11 lower-window step because the realized GTK window was not an X11Window"
 
   return window
 
