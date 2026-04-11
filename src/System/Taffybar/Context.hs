@@ -559,14 +559,22 @@ buildBarWindow context barConfig = do
 
         Gtk.containerAdd window box
 
-        let addToStart count widget = do
-              _ <- widgetSetClassGI widget $ T.pack $ printf "left-%d" (count :: Int)
+        let addIndexedClass :: (Gtk.IsWidget b, MonadIO m) => T.Text -> Int -> b -> m b
+            addIndexedClass prefix count widget =
+              widgetSetClassGI widget $ T.pack $ printf "%s-%d" (T.unpack prefix) count
+            addEndPaletteClasses count widget = do
+              let slot = ((count - 1) `mod` 5) + 1 :: Int
+              _ <- widgetSetClassGI widget "end-widget"
+              addIndexedClass "end-slot" slot widget
+            addToStart count widget = do
+              _ <- addIndexedClass "left" count widget
               Gtk.boxPackStart box widget False False 0
             addToEnd count widget = do
-              _ <- widgetSetClassGI widget $ T.pack $ printf "right-%d" (count :: Int)
+              _ <- addIndexedClass "right" count widget
+              _ <- addEndPaletteClasses count widget
               Gtk.boxPackEnd box widget False False 0
             addToCenter count widget = do
-              _ <- widgetSetClassGI widget $ T.pack $ printf "center-%d" (count :: Int)
+              _ <- addIndexedClass "center" count widget
               Gtk.boxPackStart centerBox widget False False 0
 
         logIO DEBUG "Building start widgets"
@@ -608,14 +616,22 @@ buildBarWindow context barConfig = do
 
               Gtk.boxPackStart levelsBox box False True 0
 
-              let addToStart count widget = do
-                    _ <- widgetSetClassGI widget $ T.pack $ printf "left-%d" (count :: Int)
+              let addIndexedClass :: (Gtk.IsWidget b, MonadIO m) => T.Text -> Int -> b -> m b
+                  addIndexedClass prefix count widget =
+                    widgetSetClassGI widget $ T.pack $ printf "%s-%d" (T.unpack prefix) count
+                  addEndPaletteClasses count widget = do
+                    let slot = ((count - 1) `mod` 5) + 1 :: Int
+                    _ <- widgetSetClassGI widget "end-widget"
+                    addIndexedClass "end-slot" slot widget
+                  addToStart count widget = do
+                    _ <- addIndexedClass "left" count widget
                     Gtk.boxPackStart box widget False False 0
                   addToEnd count widget = do
-                    _ <- widgetSetClassGI widget $ T.pack $ printf "right-%d" (count :: Int)
+                    _ <- addIndexedClass "right" count widget
+                    _ <- addEndPaletteClasses count widget
                     Gtk.boxPackEnd box widget False False 0
                   addToCenter count widget = do
-                    _ <- widgetSetClassGI widget $ T.pack $ printf "center-%d" (count :: Int)
+                    _ <- addIndexedClass "center" count widget
                     Gtk.boxPackStart centerBox widget False False 0
 
               logIO DEBUG $ printf "Building level %d start widgets" (levelCount :: Int)
