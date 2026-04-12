@@ -95,7 +95,6 @@ import Data.List
 import qualified Data.Map as M
 import Data.Maybe (isNothing)
 import qualified Data.Text as T
-import qualified Data.Text.Encoding as TE
 import Data.Tuple.Select
 import Data.Tuple.Sequence
 import Data.Unique
@@ -144,33 +143,6 @@ logIO = logM "System.Taffybar.Context"
 
 logC :: (MonadIO m) => Priority -> String -> m ()
 logC p = liftIO . logIO p
-
-applyEndPaletteProvider :: Gtk.IsWidget b => Int -> b -> IO b
-applyEndPaletteProvider slot widget = do
-  let (bg, border, fg) =
-        case slot of
-          1 -> ("rgb(50, 60, 160)", "rgb(90, 100, 210)", "#d5d8f8")
-          2 -> ("rgb(110, 45, 160)", "rgb(155, 85, 210)", "#e8d5f8")
-          3 -> ("rgb(25, 130, 75)", "rgb(55, 190, 115)", "#c8f5e0")
-          4 -> ("rgb(20, 120, 140)", "rgb(50, 175, 200)", "#d0f2f8")
-          _ -> ("rgb(160, 40, 70)", "rgb(210, 80, 115)", "#f8d5e0")
-      css =
-        T.unlines
-          [ ".outer-pad {"
-          , "  background-image: none;"
-          , "  background-color: " <> bg <> ";"
-          , "  color: " <> fg <> ";"
-          , "  box-shadow:"
-          , "    inset 0 1px 0 rgba(255, 255, 255, 0.10),"
-          , "    inset 0 0 0 1px " <> border <> ","
-          , "    0 10px 24px rgba(0, 0, 0, 0.30);"
-          , "}"
-          ]
-  provider <- Gtk.cssProviderNew
-  Gtk.cssProviderLoadFromData provider (TE.encodeUtf8 css)
-  context <- Gtk.widgetGetStyleContext widget
-  Gtk.styleContextAddProvider context provider 801
-  return widget
 
 -- | 'Taffy' is a monad transformer that provides 'ReaderT' for 'Context'.
 type Taffy m v = ReaderT Context m v
@@ -591,10 +563,8 @@ buildBarWindow context barConfig = do
             addIndexedClass prefix count widget =
               widgetSetClassGI widget $ T.pack $ printf "%s-%d" (T.unpack prefix) count
             addEndPaletteClasses count widget = do
-              let slot = ((count - 1) `mod` 5) + 1 :: Int
-              _ <- widgetSetClassGI widget "end-widget"
-              _ <- addIndexedClass "end-slot" slot widget
-              liftIO $ applyEndPaletteProvider slot widget
+              let _ = count
+              widgetSetClassGI widget "end-widget"
             addToStart count widget = do
               _ <- addIndexedClass "left" count widget
               Gtk.boxPackStart box widget False False 0
@@ -649,10 +619,8 @@ buildBarWindow context barConfig = do
                   addIndexedClass prefix count widget =
                     widgetSetClassGI widget $ T.pack $ printf "%s-%d" (T.unpack prefix) count
                   addEndPaletteClasses count widget = do
-                    let slot = ((count - 1) `mod` 5) + 1 :: Int
-                    _ <- widgetSetClassGI widget "end-widget"
-                    _ <- addIndexedClass "end-slot" slot widget
-                    liftIO $ applyEndPaletteProvider slot widget
+                    let _ = count
+                    widgetSetClassGI widget "end-widget"
                   addToStart count widget = do
                     _ <- addIndexedClass "left" count widget
                     Gtk.boxPackStart box widget False False 0
