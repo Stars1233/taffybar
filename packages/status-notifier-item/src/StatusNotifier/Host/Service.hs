@@ -660,9 +660,7 @@ build
           res <- DTH.getNameOwner client watcherName
           case res of
             Right _ -> return ()
-            -- Start the watcher synchronously so its DBus object is exported
-            -- before host initialization queries it for registered items.
-            Left _ -> void startWatcher
+            Left _ -> void $ forkIO $ void startWatcher
 
     when shouldStartWatcher startWatcherIfNeeded
     nameRequestResult <- requestName client (fromString busName) []
