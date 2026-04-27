@@ -1,21 +1,24 @@
-import Distribution.Simple
-import Distribution.Simple.Setup (ConfigFlags(..), fromFlagOrDefault)
-import Distribution.Verbosity (Verbosity, normal)
-import Distribution.Simple.Utils (die')
-import System.Exit (ExitCode(..))
-import System.Process (readProcessWithExitCode)
-import Control.Exception (try, IOException)
+{-# LANGUAGE TupleSections #-}
+
+import Control.Exception (IOException, try)
 import Data.List (intercalate)
 import Data.Maybe (isJust)
+import Distribution.Simple
+import Distribution.Simple.Setup (ConfigFlags (..), fromFlagOrDefault)
+import Distribution.Simple.Utils (die')
+import Distribution.Verbosity (Verbosity, normal)
 import System.Environment (lookupEnv)
+import System.Exit (ExitCode (..))
+import System.Process (readProcessWithExitCode)
 
 main :: IO ()
 main =
-  defaultMainWithHooks simpleUserHooks
-    { confHook = \pkg flags -> do
-        preflightPkgConfig (fromFlagOrDefault normal (configVerbosity flags))
-        confHook simpleUserHooks pkg flags
-    }
+  defaultMainWithHooks
+    simpleUserHooks
+      { confHook = \pkg flags -> do
+          preflightPkgConfig (fromFlagOrDefault normal (configVerbosity flags))
+          confHook simpleUserHooks pkg flags
+      }
 
 preflightPkgConfig :: Verbosity -> IO ()
 preflightPkgConfig verbosity = do
@@ -26,29 +29,32 @@ preflightPkgConfig verbosity = do
   -- gtk-layer-shell on Wayland, but we don't want to prevent building the
   -- library when that optional dependency is unavailable.
   let required = ["gtk+-3.0"]
-  present <- mapM (\p -> (\ok -> (p, ok)) <$> pkgConfigExists p) required
+  present <- mapM (\p -> (p,) <$> pkgConfigExists p) required
   let missing = [p | (p, ok) <- present, not ok]
   if null missing
-  then pure ()
-  else do
-    inDirenv <- isJust <$> lookupEnv "DIRENV_DIR"
-    let nixHint =
-          if inDirenv
-          then "If you just changed Nix inputs, try: `direnv reload`"
-          else intercalate " " [ "If you're using Nix, enter the dev shell:"
-                               , "`nix develop` (or `direnv allow` + `direnv reload`)."
-                               ]
-        msg = unlines
-          [ "Missing system dependencies required via pkg-config:"
-          , "  " ++ intercalate ", " missing
-          , ""
-          , "This package needs `pkg-config` to find its C dependencies."
-          , "If you are building the standalone executable for Wayland, you will also need: gtk-layer-shell-0"
-          , ""
-          , nixHint
-          , "Otherwise, install the development packages for your distro (and pkg-config)."
-          ]
-    die' verbosity msg
+    then pure ()
+    else do
+      inDirenv <- isJust <$> lookupEnv "DIRENV_DIR"
+      let nixHint =
+            if inDirenv
+              then "If you just changed Nix inputs, try: `direnv reload`"
+              else
+                unwords
+                  [ "If you're using Nix, enter the dev shell:",
+                    "`nix develop` (or `direnv allow` + `direnv reload`)."
+                  ]
+          msg =
+            unlines
+              [ "Missing system dependencies required via pkg-config:",
+                "  " ++ intercalate ", " missing,
+                "",
+                "This package needs `pkg-config` to find its C dependencies.",
+                "If you are building the standalone executable for Wayland, you will also need: gtk-layer-shell-0",
+                "",
+                nixHint,
+                "Otherwise, install the development packages for your distro (and pkg-config)."
+              ]
+      die' verbosity msg
 
 pkgConfigExists :: String -> IO Bool
 pkgConfigExists name = do

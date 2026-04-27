@@ -69,11 +69,11 @@ spec = do
 mkMethodError :: ErrorName -> M.MethodError
 mkMethodError errName =
   M.MethodError
-    { M.methodErrorName = errName
-    , M.methodErrorSerial = Serial 0
-    , M.methodErrorSender = Nothing
-    , M.methodErrorDestination = Nothing
-    , M.methodErrorBody = []
+    { M.methodErrorName = errName,
+      M.methodErrorSerial = Serial 0,
+      M.methodErrorSender = Nothing,
+      M.methodErrorDestination = Nothing,
+      M.methodErrorBody = []
     }
 
 errorUnknownMethod :: ErrorName

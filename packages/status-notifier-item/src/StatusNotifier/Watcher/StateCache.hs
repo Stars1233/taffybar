@@ -1,45 +1,48 @@
 module StatusNotifier.Watcher.StateCache
-  ( PersistedItemEntry (..)
-  , PersistedWatcherState (..)
-  , defaultWatcherStateCachePath
-  , readPersistedWatcherState
-  , writePersistedWatcherState
-  ) where
+  ( PersistedItemEntry (..),
+    PersistedWatcherState (..),
+    defaultWatcherStateCachePath,
+    readPersistedWatcherState,
+    writePersistedWatcherState,
+  )
+where
 
 import Control.Applicative ((<|>))
 import Control.Exception (IOException, try)
 import Data.Char (isAlphaNum, isDigit)
 import Data.List (intercalate)
 import System.Directory
-  ( XdgDirectory (XdgCache)
-  , createDirectoryIfMissing
-  , doesFileExist
-  , getXdgDirectory
-  , renameFile
+  ( XdgDirectory (XdgCache),
+    createDirectoryIfMissing,
+    doesFileExist,
+    getXdgDirectory,
+    renameFile,
   )
-import System.FilePath ((</>), takeDirectory)
+import System.FilePath (takeDirectory, (</>))
 import Text.ParserCombinators.ReadP
-  ( ReadP
-  , char
-  , choice
-  , eof
-  , many
-  , munch
-  , readP_to_S
-  , satisfy
-  , sepBy
-  , skipSpaces
+  ( ReadP,
+    char,
+    choice,
+    eof,
+    many,
+    munch,
+    readP_to_S,
+    satisfy,
+    sepBy,
+    skipSpaces,
   )
 
 data PersistedItemEntry = PersistedItemEntry
-  { persistedServiceName :: String
-  , persistedServicePath :: String
-  } deriving (Eq, Show)
+  { persistedServiceName :: String,
+    persistedServicePath :: String
+  }
+  deriving (Eq, Show)
 
 data PersistedWatcherState = PersistedWatcherState
-  { persistedItems :: [PersistedItemEntry]
-  , persistedHosts :: [PersistedItemEntry]
-  } deriving (Eq, Show)
+  { persistedItems :: [PersistedItemEntry],
+    persistedHosts :: [PersistedItemEntry]
+  }
+  deriving (Eq, Show)
 
 data JsonValue
   = JsonObject [(String, JsonValue)]
@@ -90,16 +93,16 @@ encodePersistedWatcherState :: PersistedWatcherState -> String
 encodePersistedWatcherState state =
   encodeJsonValue $
     JsonObject
-      [ ("version", JsonNumber 1)
-      , ("items", JsonArray $ map encodeItemEntry (persistedItems state))
-      , ("hosts", JsonArray $ map encodeItemEntry (persistedHosts state))
+      [ ("version", JsonNumber 1),
+        ("items", JsonArray $ map encodeItemEntry (persistedItems state)),
+        ("hosts", JsonArray $ map encodeItemEntry (persistedHosts state))
       ]
 
 encodeItemEntry :: PersistedItemEntry -> JsonValue
 encodeItemEntry entry =
   JsonObject
-    [ ("service_name", JsonString (persistedServiceName entry))
-    , ("service_path", JsonString (persistedServicePath entry))
+    [ ("service_name", JsonString (persistedServiceName entry)),
+      ("service_path", JsonString (persistedServicePath entry))
     ]
 
 decodePersistedWatcherState :: String -> Either String PersistedWatcherState
@@ -114,20 +117,22 @@ decodePersistedWatcherState raw = do
       hostsValue <- getRequired "hosts" rootObject
       items <- asArray "items" itemsValue >>= mapM decodeItemEntry
       hosts <- asArray "hosts" hostsValue >>= mapM decodeItemEntry
-      Right PersistedWatcherState
-        { persistedItems = items
-        , persistedHosts = hosts
-        }
+      Right
+        PersistedWatcherState
+          { persistedItems = items,
+            persistedHosts = hosts
+          }
 
 decodeItemEntry :: JsonValue -> Either String PersistedItemEntry
 decodeItemEntry value = do
   obj <- asObject "entry" value
   serviceName <- getRequiredString "service_name" obj
   servicePath <- getRequiredString "service_path" obj
-  Right PersistedItemEntry
-    { persistedServiceName = serviceName
-    , persistedServicePath = servicePath
-    }
+  Right
+    PersistedItemEntry
+      { persistedServiceName = serviceName,
+        persistedServicePath = servicePath
+      }
 
 encodeJsonValue :: JsonValue -> String
 encodeJsonValue json =
@@ -218,17 +223,17 @@ parseJsonStringChar =
     parseEscaped = do
       _ <- char '\\'
       choice
-        [ '"' <$ char '"'
-        , '\\' <$ char '\\'
-        , '\n' <$ char 'n'
-        , '\r' <$ char 'r'
-        , '\t' <$ char 't'
+        [ '"' <$ char '"',
+          '\\' <$ char '\\',
+          '\n' <$ char 'n',
+          '\r' <$ char 'r',
+          '\t' <$ char 't'
         ]
     parseUnescaped = satisfy (\c -> c /= '"' && c /= '\\')
 
 parseJsonNumber :: ReadP JsonValue
 parseJsonNumber = do
-  sign <- munch (\c -> c == '-')
+  sign <- munch (== '-')
   digits <- munch isDigit
   if null digits || length sign > 1
     then fail "Invalid number"

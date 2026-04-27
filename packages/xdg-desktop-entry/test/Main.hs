@@ -6,13 +6,11 @@ import System.IO.Temp (withSystemTempDirectory)
 import Test.Hspec
 
 fileContent :: [String]
-fileContent = [
-    "[Desktop Entry]\n\
+fileContent =
+  [ "[Desktop Entry]\n\
     \Icon=1",
-
     "[Desktop Entry]\n\
     \icon=2",
-
     "[desktop entry]\n\
     \Icon=3"
   ]
@@ -21,7 +19,7 @@ main :: IO ()
 main = withSystemTempDirectory "xdg-desktop-entry" $ \dir -> do
   let filepath :: Int -> String
       filepath i = dir </> show i
-  for_ (zip [0::Int ..] fileContent) $ \(i, content) -> do
+  for_ (zip [0 :: Int ..] fileContent) $ \(i, content) -> do
     print i
     writeFile (filepath i) content
   hspec $ do

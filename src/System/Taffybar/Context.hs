@@ -76,11 +76,12 @@ where
 import Control.Arrow ((&&&), (***))
 import Control.Concurrent (forkIO, threadDelay)
 import qualified Control.Concurrent.MVar as MV
-import Control.Concurrent.STM.TChan (TChan)
+import Control.Concurrent.STM.TChan (TChan, readTChan)
 import Control.Exception (SomeException, try)
 import Control.Exception.Enclosed (catchAny)
 import Control.Monad
 import Control.Monad.IO.Class
+import Control.Monad.STM (atomically)
 import Control.Monad.Trans.Class
 import Control.Monad.Trans.Maybe
 import Control.Monad.Trans.Reader
@@ -364,6 +365,9 @@ buildContextWithBackend
       startup
       logC DEBUG "Queing build windows command"
       refreshTaffyWindows
+      when (backendType == BackendWayland) $
+        liftIO $
+          registerHyprlandReconnectRefresh context
     logIO DEBUG "Context build finished"
     return context
 
@@ -411,6 +415,49 @@ registerResumeRefresh ctx = do
         "Failed to register logind PrepareForSleep handler (resume refresh disabled): "
           ++ show e
     Right _ -> pure ()
+
+-- | Recreate Wayland bar windows when the Hyprland event socket reconnects.
+--
+-- Hyprland restarts can leave existing layer-shell surfaces invisible even
+-- though the taffybar process and widget state loops are still alive. The
+-- Hyprland event reader emits @taffybar-hyprland-connected@ after every event
+-- socket connection, so use reconnects as the compositor-lifecycle signal and
+-- force a top-level window refresh.
+registerHyprlandReconnectRefresh :: Context -> IO ()
+registerHyprlandReconnectRefresh ctx = do
+  eventChan <- withHyprlandEventChan ctx
+  events <- subscribeHyprlandEvents eventChan
+  readyVar <- MV.newMVar False
+  pendingVar <- MV.newMVar False
+  void $ forkIO $ do
+    -- The event reader also emits a connection event during normal startup.
+    -- Ignore early connection events so startup does not immediately rebuild
+    -- the windows it just created.
+    threadDelay 2_000_000
+    void $ MV.swapMVar readyVar True
+
+  let isConnectedEvent line =
+        T.takeWhile (/= '>') line == "taffybar-hyprland-connected"
+
+      scheduleRefresh = do
+        wasPending <- MV.swapMVar pendingVar True
+        unless wasPending $ void $ forkIO $ do
+          -- Give Hyprland/GDK a short settling window before rebuilding
+          -- layer-shell surfaces.
+          threadDelay 1_000_000
+          _ <- MV.swapMVar pendingVar False
+          logIO NOTICE "Hyprland event socket reconnected - forcing taffybar window refresh"
+          postGUIASync $ runReaderT forceRefreshTaffyWindows ctx
+
+      handleConnectedEvent = do
+        ready <- MV.readMVar readyVar
+        if ready
+          then scheduleRefresh
+          else logIO DEBUG "Ignoring Hyprland event socket connection during startup"
+
+  void $ forkIO $ forever $ do
+    line <- atomically $ readTChan events
+    when (isConnectedEvent line) handleConnectedEvent
 
 -- | Build an empty taffybar context. This function is mostly useful for
 -- invoking functions that yield 'TaffyIO' values in a testing setting (e.g. in

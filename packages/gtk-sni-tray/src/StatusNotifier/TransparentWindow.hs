@@ -1,7 +1,10 @@
-{-# LANGUAGE OverloadedLabels #-}
-{-# LANGUAGE GADTs #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE GADTs #-}
+
 -----------------------------------------------------------------------------
+
+-----------------------------------------------------------------------------
+
 -- |
 -- Module      : StatusNotifier.TransparentWindow
 -- Copyright   : (c) Ivan A. Malison
@@ -13,16 +16,15 @@
 --
 -- Make a window transparent. Approach adapted from python code from
 -- https://stackoverflow.com/questions/3908565/how-to-make-gtk-window-background-transparent/33294727#33294727
------------------------------------------------------------------------------
 module StatusNotifier.TransparentWindow where
 
-import           Control.Monad.IO.Class
-import           GI.Cairo.Render
-import           GI.Cairo.Render.Connector
+import Control.Monad.IO.Class
+import GI.Cairo.Render
+import GI.Cairo.Render.Connector
 import qualified GI.Gdk as Gdk
 import qualified GI.Gtk as Gtk
 
-makeWindowTransparent :: MonadIO m => Gtk.Window -> m ()
+makeWindowTransparent :: (MonadIO m) => Gtk.Window -> m ()
 makeWindowTransparent window = do
   screen <- Gtk.widgetGetScreen window
   visual <- Gdk.screenGetRgbaVisual screen

@@ -112,10 +112,10 @@ recolorInPlace pb computeRgb = do
       validFormat = bytesPerPixel == 3 || bytesPerPixel == 4
 
       readChannel :: Ptr Word8 -> Int -> IO Word8
-      readChannel p off = peekByteOff p off
+      readChannel = peekByteOff
 
       writeChannel :: Ptr Word8 -> Int -> Word8 -> IO ()
-      writeChannel p off v = pokeByteOff p off v
+      writeChannel = pokeByteOff
 
   if width <= 0 || height <= 0 || not validFormat || BS.null pixelsBs
     then pure ()

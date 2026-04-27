@@ -20,6 +20,8 @@
 module System.Taffybar.Context.Backend
   ( Backend (..),
     detectBackend,
+    detectBackendFromGdk,
+    prepareBackendEnvironment,
 
     -- * Discovery helpers
     discoverWaylandSocket,
@@ -29,7 +31,12 @@ where
 
 import Control.Exception.Enclosed (catchAny)
 import Control.Monad
+import Data.GI.Base (castTo)
 import Data.List (isPrefixOf, isSuffixOf)
+import Data.Maybe (isJust)
+import qualified Data.Text as T
+import qualified GI.Gdk as Gdk
+import qualified GI.GdkX11.Objects.X11Display as GdkX11
 import System.Directory (doesPathExist, listDirectory)
 import System.Environment (lookupEnv, setEnv, unsetEnv)
 import System.FilePath ((</>))
@@ -65,16 +72,15 @@ discoverWaylandSocket runtime = do
   where
     go [] = pure Nothing
     go (c : cs) = do
-      ok <-
-        catchAny
-          (isSocket <$> getFileStatus (runtime </> c))
-          (const $ pure False)
+      ok <- isSocketPath (runtime </> c)
       if ok then pure (Just c) else go cs
 
 -- | Try to find a Hyprland instance signature in @XDG_RUNTIME_DIR/hypr/@.
 --
 -- Hyprland creates a directory named after its instance signature under
--- @$XDG_RUNTIME_DIR/hypr/@ containing @hyprland.lock@.
+-- @$XDG_RUNTIME_DIR/hypr/@ containing live command/event sockets. Stale
+-- instance directories can remain after a compositor exits, so lock files are
+-- not sufficient evidence that Hyprland is the active session.
 discoverHyprlandSignature :: FilePath -> IO (Maybe String)
 discoverHyprlandSignature runtime = do
   let hyprDir = runtime </> "hypr"
@@ -87,8 +93,23 @@ discoverHyprlandSignature runtime = do
   where
     go _ [] = pure Nothing
     go hyprDir (e : es) = do
-      isSig <- doesPathExist (hyprDir </> e </> "hyprland.lock")
+      isSig <- isLiveHyprlandSignature (hyprDir </> e)
       if isSig then pure (Just e) else go hyprDir es
+
+isSocketPath :: FilePath -> IO Bool
+isSocketPath path =
+  catchAny
+    (isSocket <$> getFileStatus path)
+    (const $ pure False)
+
+isLiveHyprlandSignature :: FilePath -> IO Bool
+isLiveHyprlandSignature dir =
+  (||)
+    <$> isSocketPath (dir </> ".socket.sock")
+    <*> isSocketPath (dir </> ".socket2.sock")
+
+envIsNonEmpty :: Maybe String -> Bool
+envIsNonEmpty = maybe False (not . null)
 
 -- | Detect the display-server backend, compensating for stale or missing
 -- environment variables.
@@ -104,19 +125,32 @@ discoverHyprlandSignature runtime = do
 --   or empty even though a Wayland compositor is running (e.g. after switching
 --   from an X11 session).
 --
--- This function discovers the real state by probing @XDG_RUNTIME_DIR@, fixes
--- up the process environment so downstream code sees consistent values, and
--- returns the appropriate 'Backend'.
-detectBackend :: IO Backend
-detectBackend = do
+-- This function probes @XDG_RUNTIME_DIR@ only when the current process
+-- environment does not already identify an active X11 session, then fixes up
+-- the process environment so GDK sees consistent display variables.
+prepareBackendEnvironment :: IO ()
+prepareBackendEnvironment = do
   mRuntime <- lookupEnv "XDG_RUNTIME_DIR"
   mDisplay <- lookupEnv "DISPLAY"
   mSessionType <- lookupEnv "XDG_SESSION_TYPE"
+  rawWaylandDisplay <- lookupEnv "WAYLAND_DISPLAY"
+
+  let hasDisplay = envIsNonEmpty mDisplay
+      explicitX11Session = mSessionType == Just "x11" && hasDisplay
+
+  -- If the process environment identifies the active session as X11, trust it
+  -- over ambient Wayland sockets in XDG_RUNTIME_DIR. Those sockets can outlive
+  -- or coexist with a different login session and are not sufficient evidence
+  -- that this process should initialize GTK as Wayland.
+  when explicitX11Session $ do
+    unsetEnv "WAYLAND_DISPLAY"
+    unsetEnv "HYPRLAND_INSTANCE_SIGNATURE"
+    logIO DEBUG "X11 session detected; ignoring ambient Wayland sockets"
 
   -- Discover and fix up WAYLAND_DISPLAY if it is missing or empty.
-  mWaylandDisplay <- do
-    raw <- lookupEnv "WAYLAND_DISPLAY"
-    case (mRuntime, raw) of
+  void $ do
+    case (mRuntime, rawWaylandDisplay) of
+      _ | explicitX11Session -> pure Nothing
       (Just runtime, val) | maybe True null val -> do
         mSock <- discoverWaylandSocket runtime
         case mSock of
@@ -124,11 +158,11 @@ detectBackend = do
             logIO INFO $ "Discovered wayland socket: " ++ sock
             setEnv "WAYLAND_DISPLAY" sock
             pure (Just sock)
-          Nothing -> pure raw
-      _ -> pure raw
+          Nothing -> pure rawWaylandDisplay
+      _ -> pure rawWaylandDisplay
 
   -- Discover and fix up HYPRLAND_INSTANCE_SIGNATURE if it is missing or empty.
-  do
+  unless explicitX11Session $ do
     raw <- lookupEnv "HYPRLAND_INSTANCE_SIGNATURE"
     case (mRuntime, raw) of
       (Just runtime, val) | maybe True null val -> do
@@ -140,6 +174,37 @@ detectBackend = do
           Nothing -> pure ()
       _ -> pure ()
 
+-- | Detect the backend from the display that GDK actually opened.
+--
+-- This should be preferred after @Gtk.init@. Before GTK/GDK initialization,
+-- 'Gdk.displayGetDefault' usually returns 'Nothing', so callers still need
+-- 'prepareBackendEnvironment' to steer GDK toward the intended display.
+detectBackendFromGdk :: IO (Maybe Backend)
+detectBackendFromGdk = do
+  mDisplay <- Gdk.displayGetDefault
+  case mDisplay of
+    Nothing -> pure Nothing
+    Just display -> do
+      displayName <- Gdk.displayGetName display
+      isX11 <- isJust <$> castTo GdkX11.X11Display display
+      let selected =
+            if isX11
+              then BackendX11
+              else BackendWayland
+      logIO INFO $
+        "Detected backend from GDK display "
+          ++ T.unpack displayName
+          ++ ": "
+          ++ show selected
+      pure $ Just selected
+
+detectBackendFromEnvironment :: IO Backend
+detectBackendFromEnvironment = do
+  mRuntime <- lookupEnv "XDG_RUNTIME_DIR"
+  mDisplay <- lookupEnv "DISPLAY"
+  mSessionType <- lookupEnv "XDG_SESSION_TYPE"
+  mWaylandDisplay <- lookupEnv "WAYLAND_DISPLAY"
+
   -- Validate the wayland socket.
   let mWaylandPath = do
         runtime <- mRuntime
@@ -149,10 +214,7 @@ detectBackend = do
 
   waylandOk <- case mWaylandPath of
     Nothing -> pure False
-    Just wlPath ->
-      catchAny
-        (isSocket <$> getFileStatus wlPath)
-        (const $ pure False)
+    Just wlPath -> isSocketPath wlPath
 
   -- Clean up the environment when falling back to X11.
   when (not waylandOk && maybe False (not . null) mDisplay) $ do
@@ -166,5 +228,11 @@ detectBackend = do
     setEnv "XDG_SESSION_TYPE" "wayland"
 
   let selected = if waylandOk then BackendWayland else BackendX11
-  logIO INFO $ "Detected backend: " ++ show selected
+  logIO INFO $ "Detected backend from environment: " ++ show selected
   pure selected
+
+detectBackend :: IO Backend
+detectBackend = do
+  prepareBackendEnvironment
+  mGdkBackend <- detectBackendFromGdk
+  maybe detectBackendFromEnvironment pure mGdkBackend

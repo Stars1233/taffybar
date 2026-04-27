@@ -210,6 +210,7 @@ library
                  , System.Taffybar.Widget.MPRIS2
                  , System.Taffybar.Widget.NetworkGraph
                  , System.Taffybar.Widget.NetworkManager
+                 , System.Taffybar.Widget.OpenAIUsage
                  , System.Taffybar.Widget.PowerProfiles
                  , System.Taffybar.Widget.Privacy
                  , System.Taffybar.Widget.ScreenLock
@@ -390,6 +391,7 @@ test-suite unit
                , hspec
                , hspec-core
                , hspec-golden
+               , network
                , taffybar
                , taffybar:testlib
                , typed-process

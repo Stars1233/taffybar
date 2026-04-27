@@ -1,12 +1,14 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TemplateHaskellQuotes #-}
+
 module DBusMenu.Client.Util
-  ( RecordGenerationParams(..)
-  , GetTypeForName
-  , defaultRecordGenerationParams
-  , generateClientFromFile
-  ) where
+  ( RecordGenerationParams (..),
+    GetTypeForName,
+    defaultRecordGenerationParams,
+    generateClientFromFile,
+  )
+where
 
 import Control.Monad (forM)
 import DBus (ObjectPath)
@@ -23,17 +25,18 @@ import Language.Haskell.TH.Syntax (addDependentFile, makeRelativeToProject)
 type GetTypeForName = String -> DBusTypes.Type -> Maybe Type
 
 data RecordGenerationParams = RecordGenerationParams
-  { recordName :: Maybe String
-  , recordPrefix :: String
-  , recordTypeForName :: GetTypeForName
+  { recordName :: Maybe String,
+    recordPrefix :: String,
+    recordTypeForName :: GetTypeForName
   }
 
 defaultRecordGenerationParams :: RecordGenerationParams
-defaultRecordGenerationParams = RecordGenerationParams
-  { recordName = Nothing
-  , recordPrefix = "_"
-  , recordTypeForName = const $ const Nothing
-  }
+defaultRecordGenerationParams =
+  RecordGenerationParams
+    { recordName = Nothing,
+      recordPrefix = "_",
+      recordTypeForName = const $ const Nothing
+    }
 
 deriveShowAndEQ :: [DerivClause]
 deriveShowAndEQ =
@@ -44,43 +47,42 @@ buildDataFromNameTypePairs name pairs =
   DataD [] name [] Nothing [RecC name (map mkVarBangType pairs)] deriveShowAndEQ
   where
     mkVarBangType (fieldName, fieldType) =
-      ( fieldName
-      , Bang NoSourceUnpackedness NoSourceStrictness
-      , fieldType
+      ( fieldName,
+        Bang NoSourceUnpackedness NoSourceStrictness,
+        fieldType
       )
 
-generateGetAllRecord
-  :: RecordGenerationParams
-  -> GenerationParams
-  -> I.Interface
-  -> Q [Dec]
+generateGetAllRecord ::
+  RecordGenerationParams ->
+  GenerationParams ->
+  I.Interface ->
+  Q [Dec]
 generateGetAllRecord
   RecordGenerationParams
-    { recordName = recordNameString
-    , recordPrefix = prefix
-    , recordTypeForName = getTypeForName
+    { recordName = recordNameString,
+      recordPrefix = prefix,
+      recordTypeForName = getTypeForName
     }
-  GenerationParams { getTHType = getArgType }
+  GenerationParams {getTHType = getArgType}
   I.Interface
-    { I.interfaceName = interfaceName
-    , I.interfaceProperties = properties
+    { I.interfaceName = interfaceName,
+      I.interfaceProperties = properties
     } = do
-  let theRecordName =
-        mkName $
-          maybe
-            (map Char.toUpper $ filter Char.isLetter $ Coerce.coerce interfaceName)
-            id
-            recordNameString
-      getPairFromProperty
-        I.Property { I.propertyName = propName, I.propertyType = propType } =
-          ( mkName $ prefix ++ propName
-          , Maybe.fromMaybe (getArgType propType) $
-              getTypeForName propName propType
-          )
-      getAllRecord =
-        buildDataFromNameTypePairs theRecordName $
-          map getPairFromProperty properties
-  pure [getAllRecord]
+    let theRecordName =
+          mkName $
+            Maybe.fromMaybe
+              (map Char.toUpper $ filter Char.isLetter $ Coerce.coerce interfaceName)
+              recordNameString
+        getPairFromProperty
+          I.Property {I.propertyName = propName, I.propertyType = propType} =
+            ( mkName $ prefix ++ propName,
+              Maybe.fromMaybe (getArgType propType) $
+                getTypeForName propName propType
+            )
+        getAllRecord =
+          buildDataFromNameTypePairs theRecordName $
+            map getPairFromProperty properties
+    pure [getAllRecord]
 
 getIntrospectionObjectFromFile :: FilePath -> ObjectPath -> Q I.Object
 getIntrospectionObjectFromFile filepath path = do
@@ -91,21 +93,21 @@ getIntrospectionObjectFromFile filepath path = do
     Nothing -> fail $ "Failed to parse DBus introspection XML: " <> filepath
     Just obj -> pure obj
 
-generateClientFromFile
-  :: RecordGenerationParams
-  -> GenerationParams
-  -> Bool
-  -> FilePath
-  -> Q [Dec]
+generateClientFromFile ::
+  RecordGenerationParams ->
+  GenerationParams ->
+  Bool ->
+  FilePath ->
+  Q [Dec]
 generateClientFromFile recordGenerationParams params useObjectPath filepath = do
   obj <- getIntrospectionObjectFromFile filepath "/"
   let actualObjectPath = I.objectPath obj
       realParams =
         if useObjectPath
-          then params { genObjectPath = Just actualObjectPath }
+          then params {genObjectPath = Just actualObjectPath}
           else params
       (<++>) = liftA2 (++)
   fmap concat $ forM (I.objectInterfaces obj) $ \interface -> do
-    generateGetAllRecord recordGenerationParams params interface <++>
-      generateClient realParams interface <++>
-      generateSignalsFromInterface realParams interface
+    generateGetAllRecord recordGenerationParams params interface
+      <++> generateClient realParams interface
+      <++> generateSignalsFromInterface realParams interface

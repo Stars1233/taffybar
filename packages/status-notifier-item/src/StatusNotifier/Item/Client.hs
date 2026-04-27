@@ -1,5 +1,6 @@
-{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TemplateHaskell #-}
+
 module StatusNotifier.Item.Client where
 
 import DBus.Generation
@@ -9,7 +10,8 @@ import System.FilePath
 
 generateClientFromFile
   defaultGenerationParams
-  { genTakeSignalErrorHandler = True }
+    { genTakeSignalErrorHandler = True
+    }
   False
   ("xml" </> "StatusNotifierItem.xml")
 

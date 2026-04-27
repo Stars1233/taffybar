@@ -1,72 +1,74 @@
 {-# LANGUAGE OverloadedStrings #-}
+
 module DBusMenu
   ( -- * High-level menu construction
-    buildMenu
-  , populateGtkMenu
-  , buildGtkMenuItem
+    buildMenu,
+    populateGtkMenu,
+    buildGtkMenuItem,
 
     -- * DBusMenu protocol operations
-  , getLayout
-  , aboutToShow
-  , sendClicked
+    getLayout,
+    aboutToShow,
+    sendClicked,
 
     -- * Layout tree
-  , LayoutNode(..)
-  , variantToLayout
-  , tupleToLayout
+    LayoutNode (..),
+    variantToLayout,
+    tupleToLayout,
 
     -- * Layout node property accessors
-  , menuItemType
-  , menuItemLabel
-  , menuItemVisible
-  , menuItemEnabled
-  , menuItemChildrenDisplay
-  , menuItemToggleType
-  , menuItemToggleState
-  ) where
+    menuItemType,
+    menuItemLabel,
+    menuItemVisible,
+    menuItemEnabled,
+    menuItemChildrenDisplay,
+    menuItemToggleType,
+    menuItemToggleState,
+  )
+where
 
 import Control.Concurrent (forkIO)
 import Control.Exception.Enclosed (catchAny)
 import Control.Monad (forM_, void, when)
-import Data.Int (Int32)
+import DBus
+import DBus.Client
+import qualified DBusMenu.Client as DM
+import Data.Either (fromRight)
+import Data.GI.Base (unsafeCastTo)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
+import Data.Int (Int32)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 import Data.Word (Word32)
-import DBus
-import DBus.Client
-import Data.GI.Base (unsafeCastTo)
 import Foreign.Ptr (Ptr, nullPtr)
 import Foreign.StablePtr
-  ( StablePtr
-  , castPtrToStablePtr
-  , castStablePtrToPtr
-  , deRefStablePtr
-  , freeStablePtr
-  , newStablePtr
+  ( StablePtr,
+    castPtrToStablePtr,
+    castStablePtrToPtr,
+    deRefStablePtr,
+    freeStablePtr,
+    newStablePtr,
   )
 import qualified GI.GLib as GLib
 import qualified GI.GObject.Objects.Object as GObject
 import qualified GI.Gtk as Gtk
-import System.Log.Logger (Priority(..), logM)
+import System.Log.Logger (Priority (..), logM)
 import Text.Printf
-
-import qualified DBusMenu.Client as DM
 
 dbusMenuLogger :: Priority -> String -> IO ()
 dbusMenuLogger = logM "DBusMenu"
 
 layoutPropNames :: [String]
 layoutPropNames =
-  [ "type"
-  , "label"
-  , "visible"
-  , "enabled"
-  , "children-display"
-  , "toggle-type"
-  , "toggle-state"
+  [ "type",
+    "label",
+    "visible",
+    "enabled",
+    "children-display",
+    "toggle-type",
+    "toggle-state"
   ]
 
 addCssClass :: Gtk.Widget -> T.Text -> IO ()
@@ -75,10 +77,11 @@ addCssClass widget cssClass =
 
 -- | A node in the DBusMenu layout tree.
 data LayoutNode = LayoutNode
-  { lnId :: Int32
-  , lnProps :: Map String Variant
-  , lnChildren :: [LayoutNode]
-  } deriving (Eq, Show)
+  { lnId :: Int32,
+    lnProps :: Map String Variant,
+    lnChildren :: [LayoutNode]
+  }
+  deriving (Eq, Show)
 
 type LayoutTuple = (Int32, Map String Variant, [Variant])
 
@@ -135,15 +138,15 @@ variantToLayout :: Variant -> Maybe LayoutNode
 variantToLayout v = do
   (i, props, kids) <- fromVariant v :: Maybe LayoutTuple
   children <- traverse variantToLayout kids
-  pure LayoutNode { lnId = i, lnProps = props, lnChildren = children }
+  pure LayoutNode {lnId = i, lnProps = props, lnChildren = children}
 
 -- | Convert a raw layout tuple into a LayoutNode.
 tupleToLayout :: LayoutTuple -> LayoutNode
 tupleToLayout (i, props, kids) =
   LayoutNode
-    { lnId = i
-    , lnProps = props
-    , lnChildren = [ n | v <- kids, Just n <- [variantToLayout v] ]
+    { lnId = i,
+      lnProps = props,
+      lnChildren = [n | v <- kids, Just n <- [variantToLayout v]]
     }
 
 -- | Unwrap an Either MethodError, failing on Left.
@@ -155,13 +158,14 @@ unwrapCall _ (Right a) = pure a
 -- Returns True if the service indicates an update is needed.
 aboutToShow :: Client -> BusName -> ObjectPath -> Int32 -> IO Bool
 aboutToShow client dest path i =
-  either (const False) id <$> DM.aboutToShow client dest path i
+  fromRight False <$> DM.aboutToShow client dest path i
 
 -- | Fetch the layout tree from the DBusMenu service.
 getLayout :: Client -> BusName -> ObjectPath -> Int32 -> Int32 -> [String] -> IO (Word32, LayoutNode)
 getLayout client dest path parentId depth propNames = do
-  (rev, tup) <- unwrapCall "GetLayout" =<<
-    DM.getLayout client dest path parentId depth propNames
+  (rev, tup) <-
+    unwrapCall "GetLayout"
+      =<< DM.getLayout client dest path parentId depth propNames
   pure (rev, tupleToLayout tup)
 
 -- | Send a \"clicked\" event to the DBusMenu service for the given item.
@@ -169,39 +173,48 @@ getLayout client dest path parentId depth propNames = do
 sendClicked :: Client -> BusName -> ObjectPath -> Int32 -> Word32 -> IO ()
 sendClicked client dest path itemId ts = do
   dbusMenuLogger DEBUG $
-    printf "sendClicked: id=%d dest=%s path=%s ts=%d"
-           itemId (show dest) (show path) ts
-  let mc = DM.eventMethodCall
-        { methodCallDestination = Just dest
-        , methodCallPath = path
-        , methodCallBody =
-            [ toVariant itemId
-            , toVariant ("clicked" :: String)
-            , toVariant (toVariant (0 :: Int32))
-            , toVariant ts
-            ]
-        }
+    printf
+      "sendClicked: id=%d dest=%s path=%s ts=%d"
+      itemId
+      (show dest)
+      (show path)
+      ts
+  let mc =
+        DM.eventMethodCall
+          { methodCallDestination = Just dest,
+            methodCallPath = path,
+            methodCallBody =
+              [ toVariant itemId,
+                toVariant ("clicked" :: String),
+                toVariant (toVariant (0 :: Int32)),
+                toVariant ts
+              ]
+          }
   -- Send on a forked thread to avoid blocking GTK; use `call` instead of
   -- `callNoReply` so we can detect service errors.
-  void $ forkIO $ catchAny
-    (do result <- call client mc
-        case result of
-          Left err -> dbusMenuLogger WARNING $
-            printf "sendClicked: Event error: %s" (show err)
-          Right _ -> dbusMenuLogger DEBUG "sendClicked: Event succeeded")
-    (\e -> dbusMenuLogger WARNING $
-           printf "sendClicked: Event exception: %s" (show e))
+  void $
+    forkIO $
+      catchAny
+        ( do
+            result <- call client mc
+            case result of
+              Left err ->
+                dbusMenuLogger WARNING $
+                  printf "sendClicked: Event error: %s" (show err)
+              Right _ -> dbusMenuLogger DEBUG "sendClicked: Event succeeded"
+        )
+        (dbusMenuLogger WARNING . printf "sendClicked: Event exception: %s" . show)
 
 getPropS :: String -> LayoutNode -> Maybe String
-getPropS key LayoutNode { lnProps = props } =
+getPropS key LayoutNode {lnProps = props} =
   Map.lookup key props >>= fromVariant
 
 getPropB :: String -> LayoutNode -> Maybe Bool
-getPropB key LayoutNode { lnProps = props } =
+getPropB key LayoutNode {lnProps = props} =
   Map.lookup key props >>= fromVariant
 
 getPropI32 :: String -> LayoutNode -> Maybe Int32
-getPropI32 key LayoutNode { lnProps = props } =
+getPropI32 key LayoutNode {lnProps = props} =
   Map.lookup key props >>= fromVariant
 
 -- | The item type (e.g. @\"separator\"@), or Nothing for standard items.
@@ -340,19 +353,23 @@ buildGtkMenuItem' client dest path dispatch _parentMenu node = do
       -- Register click action in the menu-level dispatch table.
       let itemId = lnId node
       atomicModifyIORef' dispatch $ \m ->
-        ( Map.insert itemId (sendClicked client dest path itemId =<< Gtk.getCurrentEventTime) m
-        , ()
+        ( Map.insert itemId (sendClicked client dest path itemId =<< Gtk.getCurrentEventTime) m,
+          ()
         )
       -- Thin trampoline: look up action from the persistent dispatch table
       -- at activation time rather than capturing it in a per-widget closure.
-      _ <- Gtk.onMenuItemActivate item $ catchAny
-        (do actions <- readIORef dispatch
-            case Map.lookup itemId actions of
-              Just action -> action
-              Nothing -> dbusMenuLogger WARNING $
-                printf "Dispatch: no action for item %d" itemId)
-        (\e -> dbusMenuLogger WARNING $
-               printf "Menu item %d dispatch failed: %s" itemId (show e))
+      _ <-
+        Gtk.onMenuItemActivate item $
+          catchAny
+            ( do
+                actions <- readIORef dispatch
+                case Map.lookup itemId actions of
+                  Just action -> action
+                  Nothing ->
+                    dbusMenuLogger WARNING $
+                      printf "Dispatch: no action for item %d" itemId
+            )
+            (dbusMenuLogger WARNING . printf "Menu item %d dispatch failed: %s" itemId . show)
       pure ()
     else do
       addCssClass itemW "dbusmenu-has-submenu"
@@ -365,25 +382,31 @@ buildGtkMenuItem' client dest path dispatch _parentMenu node = do
       -- the service doesn't support/require lazy updates.
       populateGtkMenu' client dest path dispatch submenu node
       loadedRef <- newIORef (not (null (lnChildren node)))
-      let refresh = void $ forkIO $ catchAny
-            (do -- Run DBus calls on a forked thread to avoid blocking the GTK
-                -- main loop (which would cause queued click events to be lost
-                -- when populateGtkMenu rebuilds menu items).
-                needUpdate <- aboutToShow client dest path (lnId node)
-                loaded <- readIORef loadedRef
-                when (needUpdate || not loaded) $ do
-                  (_, layout) <- getLayout client dest path (lnId node) 1 layoutPropNames
-                  -- Post GTK updates back on the main thread.  Using
-                  -- PRIORITY_DEFAULT_IDLE ensures pending input events (clicks)
-                  -- are processed first.
-                  void $ GLib.idleAdd GLib.PRIORITY_DEFAULT_IDLE $ do
-                    populateGtkMenu' client dest path dispatch submenu layout
-                    writeIORef loadedRef True
-                    Gtk.widgetShowAll submenu
-                    return False)
-            (\e -> dbusMenuLogger WARNING $
-                   printf "Submenu %d refresh failed (stale ID?): %s"
-                          (lnId node) (show e))
+      let refresh =
+            void $
+              forkIO $
+                catchAny
+                  ( do
+                      -- Run DBus calls on a forked thread to avoid blocking the GTK
+                      -- main loop (which would cause queued click events to be lost
+                      -- when populateGtkMenu rebuilds menu items).
+                      needUpdate <- aboutToShow client dest path (lnId node)
+                      loaded <- readIORef loadedRef
+                      when (needUpdate || not loaded) $ do
+                        (_, layout) <- getLayout client dest path (lnId node) 1 layoutPropNames
+                        -- Post GTK updates back on the main thread.  Using
+                        -- PRIORITY_DEFAULT_IDLE ensures pending input events (clicks)
+                        -- are processed first.
+                        void $ GLib.idleAdd GLib.PRIORITY_DEFAULT_IDLE $ do
+                          populateGtkMenu' client dest path dispatch submenu layout
+                          writeIORef loadedRef True
+                          Gtk.widgetShowAll submenu
+                          return False
+                  )
+                  ( dbusMenuLogger WARNING
+                      . printf "Submenu %d refresh failed (stale ID?): %s" (lnId node)
+                      . show
+                  )
       _ <- Gtk.onWidgetShow submenu $ do
         refresh
         Gtk.widgetShowAll submenu

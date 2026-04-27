@@ -24,18 +24,19 @@ module System.Taffybar.ContextSpec
   )
 where
 
-import Control.Exception (SomeException, catch)
+import Control.Exception (SomeException, bracket, catch)
 import Control.Monad.Trans.Reader (runReaderT)
 import Data.Default (def)
 import Data.Ratio ((%))
 import GHC.Generics (Generic)
 import GI.Gtk (Widget)
+import Network.Socket qualified as Socket
 import System.Directory (createDirectoryIfMissing, getTemporaryDirectory, removePathForcibly)
 import System.FilePath ((</>))
 import System.Taffybar.Context
 import System.Taffybar.SimpleConfig
 import System.Taffybar.Test.DBusSpec (withTestDBus)
-import System.Taffybar.Test.UtilSpec (logSetup, withSetEnv)
+import System.Taffybar.Test.UtilSpec (logSetup, withEnv, withSetEnv)
 import System.Taffybar.Test.XvfbSpec (setDefaultDisplay_, withXdummy)
 import System.Taffybar.Widget.SimpleClock (textClockNewWith)
 import System.Taffybar.Widget.Workspaces (workspacesNew)
@@ -47,6 +48,23 @@ import Test.QuickCheck.Monadic
 spec :: Spec
 spec = logSetup $ sequential $ aroundAll_ withTestDBus $ aroundAll_ (withXdummy . flip setDefaultDisplay_) $ do
   describe "detectBackend" $ do
+    it "prefers an explicit X11 session over a discovered Wayland socket" $ do
+      tmp <- getTemporaryDirectory
+      let runtime = tmp </> "taffybar-test-runtime-x11-with-wayland-socket"
+          wlPath = runtime </> "wayland-0"
+      removePathForcibly runtime `catch` (\(_ :: SomeException) -> pure ())
+      createDirectoryIfMissing True runtime
+      withUnixSocket wlPath
+        $ withEnv
+          [ ("XDG_RUNTIME_DIR", const $ Just runtime),
+            ("DISPLAY", const $ Just ":0"),
+            ("XDG_SESSION_TYPE", const $ Just "x11"),
+            ("WAYLAND_DISPLAY", const Nothing),
+            ("HYPRLAND_INSTANCE_SIGNATURE", const Nothing)
+          ]
+        $ detectBackend `shouldReturn` BackendX11
+      removePathForcibly runtime `catch` (\(_ :: SomeException) -> pure ())
+
     it "falls back to X11 when WAYLAND_DISPLAY is set but the socket is missing" $ do
       tmp <- getTemporaryDirectory
       let runtime = tmp </> "taffybar-test-runtime-missing-socket"
@@ -82,6 +100,17 @@ spec = logSetup $ sequential $ aroundAll_ withTestDBus $ aroundAll_ (withXdummy 
   describe "Fuzz tests" $ do
     prop "eval generators" prop_genSimpleConfig
     xprop "TaffybarConfig" prop_taffybarConfig
+
+------------------------------------------------------------------------
+
+withUnixSocket :: FilePath -> IO a -> IO a
+withUnixSocket path action =
+  bracket
+    (Socket.socket Socket.AF_UNIX Socket.Stream Socket.defaultProtocol)
+    Socket.close
+    $ \sock -> do
+      Socket.bind sock (Socket.SockAddrUnix path)
+      action
 
 ------------------------------------------------------------------------
 

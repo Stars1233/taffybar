@@ -153,6 +153,7 @@ import System.FilePath (normalise, splitSearchPath, takeDirectory, takeFileName,
 import qualified System.IO as IO
 import System.Log.Logger
 import System.Taffybar.Context
+import System.Taffybar.Context.Backend (prepareBackendEnvironment)
 import System.Taffybar.Hooks
 import System.Taffybar.Util (maybeHandleSigHUP, onSigINT, rebracket_)
 
@@ -340,13 +341,14 @@ startTaffybar config = do
   setTaffyLogFormatter "System.Taffybar"
   setTaffyLogFormatter "StatusNotifier"
 
-  -- Detect backend once up-front so any environment fixups happen before GTK
-  -- initialization, and so we don't have multiple ad-hoc checks spread around.
-  backendType <- detectBackend
-  when (backendType == BackendX11) $ void initThreads
+  -- Fix up stale session-manager environment before GTK/GDK choose a display,
+  -- then use GDK's actual opened display as the source of truth.
+  prepareBackendEnvironment
+  void initThreads
 
   _ <- Gtk.init Nothing
   GIThreading.setCurrentThreadAsGUIThread
+  backendType <- detectBackend
 
   cssPathsToLoad <- getCSSPaths config
   context <- buildContextWithBackend backendType config

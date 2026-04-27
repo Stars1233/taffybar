@@ -1,15 +1,15 @@
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module WatcherSpec (spec) where
 
 import Control.Exception (finally)
-import Data.Either (isLeft)
-import Data.List (isPrefixOf)
 import DBus (BusName, busName_, formatBusName, objectPath_)
 import DBus.Client
+import Data.Either (isLeft)
+import Data.List (isPrefixOf)
 import qualified StatusNotifier.Watcher.Client as WatcherClient
 import Test.Hspec
-
 import TestSupport
 
 spec :: Spec
@@ -24,13 +24,13 @@ spec = around withIsolatedSessionBus $ do
       watcher <- startWatcher
       itemClient <- connectSession
       cleanup <- registerSimpleItem itemClient "org.test.ItemA" defaultPath "network-wireless"
-      (do
-        result <- WatcherClient.getRegisteredSNIEntries watcher
-        result `shouldSatisfy` \v ->
-          case v of
+      ( do
+          result <- WatcherClient.getRegisteredSNIEntries watcher
+          result `shouldSatisfy` \case
             Right entries -> any ((== defaultPath) . snd) entries
             Left _ -> False
-        ) `finally` cleanup
+        )
+        `finally` cleanup
 
     it "is idempotent when the same item registers twice" $ \() -> do
       watcher <- startWatcher
@@ -82,16 +82,17 @@ spec = around withIsolatedSessionBus $ do
       mainClient <- connectSession
       (sniClient, sniBusName) <- connectSessionWithName
       let sniPath = objectPath_ "/StatusNotifierItem"
-          sniIface = Interface
-            { interfaceName = "org.kde.StatusNotifierItem"
-            , interfaceMethods = []
-            , interfaceProperties =
-                [ readOnlyProperty "IconName" (pure ("test-icon" :: String))
-                , readOnlyProperty "OverlayIconName" (pure ("" :: String))
-                , readOnlyProperty "ItemIsMenu" (pure False)
-                ]
-            , interfaceSignals = []
-            }
+          sniIface =
+            Interface
+              { interfaceName = "org.kde.StatusNotifierItem",
+                interfaceMethods = [],
+                interfaceProperties =
+                  [ readOnlyProperty "IconName" (pure ("test-icon" :: String)),
+                    readOnlyProperty "OverlayIconName" (pure ("" :: String)),
+                    readOnlyProperty "ItemIsMenu" (pure False)
+                  ],
+                interfaceSignals = []
+              }
           sniNameStr = formatBusName sniBusName
       export sniClient sniPath sniIface
       -- Register using the SNI connection's unique bus name, sent from mainClient
@@ -142,7 +143,7 @@ spec = around withIsolatedSessionBus $ do
       itemClientB <- connectSession
       cleanupA <- registerSimpleItem itemClientA "org.test.ItemE" defaultPath "media-playback-start"
       cleanupB <- registerSimpleItem itemClientB "org.test.ItemF" defaultPath "media-playback-stop"
-      (do
+      ( do
           Right before <- WatcherClient.getRegisteredSNIEntries watcher
           before `shouldContain` [("org.test.ItemE", "/StatusNotifierItem")]
           before `shouldContain` [("org.test.ItemF", "/StatusNotifierItem")]
@@ -156,18 +157,20 @@ spec = around withIsolatedSessionBus $ do
                     && ("org.test.ItemF", "/StatusNotifierItem") `elem` entries
                 Left _ -> False
           stable `shouldBe` True
-        ) `finally` cleanupB
+        )
+        `finally` cleanupB
 
     it "restores live items from cache when the watcher restarts" $ \() -> do
       watcher1 <- startWatcher
       itemClient <- connectSession
       cleanup <- registerSimpleItem itemClient "org.test.RestoreLive" defaultPath "network-wireless"
-      (do
+      ( do
           _ <- releaseName watcher1 "org.kde.StatusNotifierWatcher"
           watcher2 <- startWatcher
           Right entries <- WatcherClient.getRegisteredSNIEntries watcher2
           entries `shouldContain` [("org.test.RestoreLive", "/StatusNotifierItem")]
-        ) `finally` cleanup
+        )
+        `finally` cleanup
 
     it "drops cached items that no longer exist when restarting" $ \() -> do
       watcher1 <- startWatcher
@@ -183,7 +186,7 @@ spec = around withIsolatedSessionBus $ do
       watcher1 <- startWatcher
       itemClient <- connectSession
       cleanup <- registerSimpleItem itemClient "org.test.RestoreDedup" defaultPath "folder"
-      (do
+      ( do
           _ <- releaseName watcher1 "org.kde.StatusNotifierWatcher"
           watcher2 <- startWatcher
           WatcherClient.registerStatusNotifierItem itemClient "org.test.RestoreDedup"
@@ -191,7 +194,8 @@ spec = around withIsolatedSessionBus $ do
           Right entries <- WatcherClient.getRegisteredSNIEntries watcher2
           let matches = filter (== ("org.test.RestoreDedup", "/StatusNotifierItem")) entries
           length matches `shouldBe` 1
-        ) `finally` cleanup
+        )
+        `finally` cleanup
 
 defaultPath :: String
 defaultPath = "/StatusNotifierItem"

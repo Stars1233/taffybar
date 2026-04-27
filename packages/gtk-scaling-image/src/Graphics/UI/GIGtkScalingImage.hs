@@ -16,6 +16,7 @@ module Graphics.UI.GIGtkScalingImage
   )
 where
 
+import Control.Applicative ((<|>))
 import qualified Control.Concurrent.MVar as MV
 import Control.Monad
 import Control.Monad.IO.Class
@@ -262,7 +263,7 @@ autoFillImage drawArea getPixbuf orientation = liftIO $ do
             then getPixbuf requestSize
             else pure Nothing
 
-        let src = maybe (afSourcePixbuf old) Just srcFresh
+        let src = srcFresh <|> afSourcePixbuf old
             needsRefit =
               force
                 || requestSize /= afRequestSize old
