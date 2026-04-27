@@ -33,6 +33,7 @@ import Control.Exception.Enclosed (catchAny)
 import Control.Monad
 import Data.GI.Base (castTo)
 import Data.List (isPrefixOf, isSuffixOf)
+import Data.Maybe (isJust)
 import qualified Data.Text as T
 import qualified GI.Gdk as Gdk
 import qualified GI.GdkX11.Objects.X11Display as GdkX11
@@ -185,7 +186,7 @@ detectBackendFromGdk = do
     Nothing -> pure Nothing
     Just display -> do
       displayName <- Gdk.displayGetName display
-      isX11 <- maybe False (const True) <$> castTo GdkX11.X11Display display
+      isX11 <- isJust <$> castTo GdkX11.X11Display display
       let selected =
             if isX11
               then BackendX11
@@ -234,6 +235,4 @@ detectBackend :: IO Backend
 detectBackend = do
   prepareBackendEnvironment
   mGdkBackend <- detectBackendFromGdk
-  case mGdkBackend of
-    Just backend -> pure backend
-    Nothing -> detectBackendFromEnvironment
+  maybe detectBackendFromEnvironment pure mGdkBackend

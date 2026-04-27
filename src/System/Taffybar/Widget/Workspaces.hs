@@ -52,11 +52,11 @@ import Control.Monad.IO.Class (MonadIO (..))
 import Control.Monad.Trans.Reader (ask, asks, runReaderT)
 import Data.Default (Default (..))
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
+import Data.Int (Int32)
 import Data.List (elemIndex)
 import qualified Data.Map.Strict as M
 import qualified Data.Text as T
 import Data.Word (Word64)
-import Data.Int (Int32)
 import qualified GI.Gdk.Enums as Gdk
 import qualified GI.Gdk.Structs.EventScroll as Gdk
 import qualified GI.GdkPixbuf.Objects.Pixbuf as Gdk

@@ -1,8 +1,8 @@
 module Main where
 
-import StatusNotifier.Watcher.Client
 import DBus.Client
 import Data.String
+import StatusNotifier.Watcher.Client
 
 main = do
   client <- connectSession

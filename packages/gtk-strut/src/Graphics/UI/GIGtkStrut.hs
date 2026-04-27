@@ -12,8 +12,6 @@ where
 import Control.Monad
 import Control.Monad.Fail (MonadFail)
 import Control.Monad.IO.Class
-import Control.Monad.Trans.Class
-import Control.Monad.Trans.Maybe
 import Data.Default
 import Data.IORef
 import Data.Int
@@ -221,10 +219,13 @@ setupStrutWindow
                 }
         ewmhSettings = makeEWMHSettings width height
         scaledStrutSettings = scaleStrutSettings monitorScaleFactor ewmhSettings
-        setStrutProperties settings =
-          void $ runMaybeT $ do
-            gdkWindow <- MaybeT $ Gtk.widgetGetWindow window
-            lift $ setStrut gdkWindow settings
+        setStrutProperties settings = do
+          mGdkWindow <- Gtk.widgetGetWindow window
+          case mGdkWindow of
+            Nothing -> pure False
+            Just gdkWindow -> do
+              setStrut gdkWindow settings
+              pure True
         logPairs =
           [ ("width", show width),
             ("height", show height),
@@ -249,14 +250,19 @@ setupStrutWindow
           lastSettings <- readIORef lastStrutRef
           when (lastSettings /= Just scaledSettings) $ do
             strutLog DEBUG $ "Setting strut properties: " ++ show scaledSettings
-            writeIORef lastStrutRef $ Just scaledSettings
-            setStrutProperties scaledSettings
+            didSet <- setStrutProperties scaledSettings
+            when didSet $
+              writeIORef lastStrutRef $
+                Just scaledSettings
 
     void $ Gtk.onWidgetRealize window $ updateStrutProperties ewmhSettings
     void $ Gtk.onWidgetSizeAllocate window $ \allocation -> do
       actualWidth <- Gdk.getRectangleWidth allocation
       actualHeight <- Gdk.getRectangleHeight allocation
-      updateStrutProperties $ makeEWMHSettings actualWidth actualHeight
+      updateStrutProperties $
+        makeEWMHSettings
+          actualWidth
+          actualHeight
 
 allHints :: [Gdk.WindowHints]
 allHints =

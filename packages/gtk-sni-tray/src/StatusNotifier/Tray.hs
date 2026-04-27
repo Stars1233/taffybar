@@ -1,5 +1,5 @@
 {-# LANGUAGE CPP #-}
-{-# LANGUAGE OverloadedLabels #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module StatusNotifier.Tray where
@@ -183,8 +183,8 @@ getIconPixbufByName size name themePath = do
       maybeFile <-
         if fileExists
           then return $ Just nameString
-          else fmap join $ sequenceA $ getIconPathFromThemePath nameString <$> themePath
-      fmap join $ sequenceA $ safePixbufNewFromFile <$> maybeFile
+          else join <$> traverse (getIconPathFromThemePath nameString) themePath
+      join <$> traverse safePixbufNewFromFile maybeFile
 
 getIconPathFromThemePath :: String -> String -> IO (Maybe String)
 getIconPathFromThemePath name themePath =
@@ -249,7 +249,7 @@ data TrayClickDecision
 
 type TrayClickHook = TrayClickContext -> IO TrayClickDecision
 
-data TrayEventHooks = TrayEventHooks
+newtype TrayEventHooks = TrayEventHooks
   { trayClickHook :: Maybe TrayClickHook
   }
 
@@ -263,7 +263,7 @@ data TrayItemMatcher = TrayItemMatcher
     trayItemMatcherPredicate :: ItemInfo -> Bool
   }
 
-data TrayPriorityConfig = TrayPriorityConfig
+newtype TrayPriorityConfig = TrayPriorityConfig
   { trayPriorityMatchers :: [TrayItemMatcher]
   }
 
@@ -319,11 +319,11 @@ mkTrayItemMatcher = TrayItemMatcher
 
 trayMatchAny :: [TrayItemMatcher] -> TrayItemMatcher
 trayMatchAny matchers = mkTrayItemMatcher "any" $ \info ->
-  any (\matcher -> trayItemMatcherPredicate matcher info) matchers
+  any (`trayItemMatcherPredicate` info) matchers
 
 trayMatchAll :: [TrayItemMatcher] -> TrayItemMatcher
 trayMatchAll matchers = mkTrayItemMatcher "all" $ \info ->
-  all (\matcher -> trayItemMatcherPredicate matcher info) matchers
+  all (`trayItemMatcherPredicate` info) matchers
 
 trayMatchNot :: TrayItemMatcher -> TrayItemMatcher
 trayMatchNot matcher =
@@ -577,9 +577,9 @@ buildTray
           getPriorityIndex info =
             fromMaybe
               (length priorityMatchers)
-              (findIndex (\matcher -> trayItemMatcherPredicate matcher info) priorityMatchers)
+              (findIndex (`trayItemMatcherPredicate` info) priorityMatchers)
 
-          reorderTrayByPriority = when (not (null priorityMatchers)) $ do
+          reorderTrayByPriority = unless (null priorityMatchers) $ do
             infoMap <- getInfoMap
             let orderedInfos =
                   sortOn
@@ -770,7 +770,7 @@ buildTray
                                       popupGtkMenu gtkMenu currentEvent
                                       return False
                           traverse_
-                            ( \action -> case action of
+                            ( \case
                                 Activate ->
                                   runAsync "Activate" $
                                     void $
@@ -860,12 +860,9 @@ buildTray
                             ( \d ->
                                 catchAny
                                   (void $ IC.scroll client serviceName servicePath delta d)
-                                  ( \e ->
-                                      trayLogger WARNING $
-                                        printf
-                                          "Scroll failed for %s: %s"
-                                          (coerce serviceName :: String)
-                                          (show e)
+                                  ( trayLogger WARNING
+                                      . printf "Scroll failed for %s: %s" (coerce serviceName :: String)
+                                      . show
                                   )
                             )
                             direction'

@@ -1,14 +1,15 @@
 {-# LANGUAGE OverloadedStrings #-}
+
 module System.Log.DBus.Server where
 
-import           Data.IORef
-import           Data.Map (Map)
-import qualified Data.Map as Map
-import           DBus
-import           DBus.Client
+import DBus
+import DBus.Client
 import qualified DBus.Introspection as I
-import           System.Log.Logger
-import           Text.Read
+import Data.IORef
+import Data.Map (Map)
+import qualified Data.Map as Map
+import System.Log.Logger
+import Text.Read
 
 maybeToEither :: b -> Maybe a -> Either b a
 maybeToEither = flip maybe Right . Left
@@ -26,8 +27,8 @@ setLogLevelTracked (LogServer ref) logPrefix level = do
   getLogger logPrefix >>= saveGlobalLogger . setLevel level
   modifyIORef' ref (Map.insert logPrefix level)
 
-setLogLevelFromPriorityStringTracked
-  :: LogServer -> String -> String -> IO (Either Reply ())
+setLogLevelFromPriorityStringTracked ::
+  LogServer -> String -> String -> IO (Either Reply ())
 setLogLevelFromPriorityStringTracked server logPrefix levelString =
   case readMaybe levelString of
     Just level -> Right <$> setLogLevelTracked server logPrefix level
@@ -48,24 +49,28 @@ getConfiguredLogLevels (LogServer ref) =
 
 -- | Build the D-Bus interface with tracking and introspection methods.
 logInterfaceWithServer :: LogServer -> Interface
-logInterfaceWithServer server = defaultInterface
-  { interfaceName = "org.taffybar.LogServer"
-  , interfaceMethods =
-      [ autoMethod "SetLogLevel"
-          (setLogLevelFromPriorityStringTracked server)
-      , autoMethod "GetLogLevel" getLogLevel
-      , autoMethod "GetConfiguredLogLevels"
-          (getConfiguredLogLevels server)
-      ]
-  }
+logInterfaceWithServer server =
+  defaultInterface
+    { interfaceName = "org.taffybar.LogServer",
+      interfaceMethods =
+        [ autoMethod
+            "SetLogLevel"
+            (setLogLevelFromPriorityStringTracked server),
+          autoMethod "GetLogLevel" getLogLevel,
+          autoMethod
+            "GetConfiguredLogLevels"
+            (getConfiguredLogLevels server)
+        ]
+    }
 
 -- | The original interface with only 'SetLogLevel'. Kept for backward
 -- compatibility.
 logInterface :: Interface
-logInterface = defaultInterface
-  { interfaceName = "org.taffybar.LogServer"
-  , interfaceMethods = [ autoMethod "SetLogLevel" setLogLevelFromPriorityString ]
-  }
+logInterface =
+  defaultInterface
+    { interfaceName = "org.taffybar.LogServer",
+      interfaceMethods = [autoMethod "SetLogLevel" setLogLevelFromPriorityString]
+    }
 
 logPath :: ObjectPath
 logPath = "/org/taffybar/LogServer"
@@ -86,22 +91,24 @@ startLogServer client =
 -- | Introspection interface including all methods (SetLogLevel, GetLogLevel,
 -- GetConfiguredLogLevels). Suitable for TH client generation.
 logIntrospectionInterface :: I.Interface
-logIntrospectionInterface = buildIntrospectionInterface $
-  defaultInterface
-    { interfaceName = "org.taffybar.LogServer"
-    , interfaceMethods =
-        [ autoMethod "SetLogLevel" setLogLevelFromPriorityString
-        , autoMethod "GetLogLevel" getLogLevel
-        , autoMethod "GetConfiguredLogLevels"
-            (return Map.empty :: IO (Map String String))
-        ]
-    }
+logIntrospectionInterface =
+  buildIntrospectionInterface $
+    defaultInterface
+      { interfaceName = "org.taffybar.LogServer",
+        interfaceMethods =
+          [ autoMethod "SetLogLevel" setLogLevelFromPriorityString,
+            autoMethod "GetLogLevel" getLogLevel,
+            autoMethod
+              "GetConfiguredLogLevels"
+              (return Map.empty :: IO (Map String String))
+          ]
+      }
 
 setLogLevelFromPriorityString :: String -> String -> IO (Either Reply ())
 setLogLevelFromPriorityString logPrefix levelString =
   let maybePriority = readMaybe levelString
-      getMaybeResult = sequenceA $ setLogLevel logPrefix <$> maybePriority
-  in maybeToEither (ReplyError errorInvalidParameters []) <$> getMaybeResult
+      getMaybeResult = traverse (setLogLevel logPrefix) maybePriority
+   in maybeToEither (ReplyError errorInvalidParameters []) <$> getMaybeResult
 
 setLogLevel :: String -> Priority -> IO ()
 setLogLevel logPrefix level =

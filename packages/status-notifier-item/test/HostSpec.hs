@@ -17,7 +17,7 @@ import Control.Concurrent
     writeChan,
   )
 import Control.Exception (finally)
-import Control.Monad (replicateM, void)
+import Control.Monad (join, replicateM, void)
 import DBus (busName_, interfaceName_, memberName_, objectPath_, signal)
 import DBus.Client
 import qualified DBus.Internal.Message as M
@@ -76,8 +76,8 @@ spec = around withIsolatedSessionBus $ do
       removeUpdateHandler host token
 
       itemClient <- connectSession
-      cleanup <- registerSimpleItem itemClient "org.test.HostItemC" defaultPath "help-about"
-      cleanup
+      join $
+        registerSimpleItem itemClient "org.test.HostItemC" defaultPath "help-about"
 
       noEvent <- timeout 500000 (readChan events)
       noEvent `shouldBe` Nothing

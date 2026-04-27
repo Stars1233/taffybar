@@ -555,7 +555,7 @@ build
           let (failures, successes) = partitionEithers updateResults
               logLevel = propertyUpdateFailureLogLevel failures successes
           mapM_ (doUpdate updateType) $ catMaybes successes
-          when (not $ null failures) $
+          unless (null failures) $
             hostLogger logLevel $
               printf "Property update failures %s" $
                 show failures

@@ -1,6 +1,5 @@
 module System.Taffybar.Information.Workspaces.EWMHSpec (spec) where
 
-import Data.List (elem)
 import System.Taffybar.Information.Workspaces.EWMH
   ( defaultEWMHWorkspaceProviderConfig,
     workspaceUpdateEvents,

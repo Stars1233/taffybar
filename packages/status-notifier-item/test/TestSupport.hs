@@ -2,58 +2,59 @@
 {-# LANGUAGE RecordWildCards #-}
 
 module TestSupport
-  ( withIsolatedSessionBus
-  , startWatcher
-  , registerSimpleItem
-  , connectSessionWithName
-  , waitFor
-  ) where
+  ( withIsolatedSessionBus,
+    startWatcher,
+    registerSimpleItem,
+    connectSessionWithName,
+    waitFor,
+  )
+where
 
 import Control.Concurrent (threadDelay)
 import Control.Exception (SomeException, displayException, finally, try)
 import Control.Monad (filterM)
 import DBus (BusName, busName_, formatBusName, objectPath_)
 import DBus.Client
-  ( Client
-  , Interface (..)
-  , RequestNameReply (NamePrimaryOwner)
-  , connectSession
-  , connectWithName
-  , defaultClientOptions
-  , export
-  , readOnlyProperty
-  , releaseName
-  , requestName
+  ( Client,
+    Interface (..),
+    RequestNameReply (NamePrimaryOwner),
+    connectSession,
+    connectWithName,
+    defaultClientOptions,
+    export,
+    readOnlyProperty,
+    releaseName,
+    requestName,
   )
 import DBus.Internal.Address (getSessionAddress)
-import StatusNotifier.Watcher.Constants
-  ( defaultWatcherParams
-  , watcherDBusClient
-  , watcherStop
-  )
 import qualified StatusNotifier.Watcher.Client as WatcherClient
+import StatusNotifier.Watcher.Constants
+  ( defaultWatcherParams,
+    watcherDBusClient,
+    watcherStop,
+  )
 import qualified StatusNotifier.Watcher.Service as WatcherService
 import System.Directory
-  ( createDirectory
-  , doesFileExist
-  , findExecutable
-  , getTemporaryDirectory
-  , removeDirectoryRecursive
-  , removeFile
+  ( createDirectory,
+    doesFileExist,
+    findExecutable,
+    getTemporaryDirectory,
+    removeDirectoryRecursive,
+    removeFile,
   )
 import System.Environment (lookupEnv, setEnv, unsetEnv)
-import System.Exit (ExitCode, ExitCode (ExitSuccess))
-import System.FilePath ((</>), takeDirectory)
+import System.Exit (ExitCode (ExitSuccess))
+import System.FilePath (takeDirectory, (</>))
 import System.IO (hClose, openTempFile)
 import System.Process (readProcessWithExitCode)
 import Test.Hspec
 
 data BusEnv = BusEnv
-  { previousAddress :: Maybe String
-  , previousPid :: Maybe String
-  , previousCacheHome :: Maybe String
-  , cacheHome :: FilePath
-  , daemonPid :: String
+  { previousAddress :: Maybe String,
+    previousPid :: Maybe String,
+    previousCacheHome :: Maybe String,
+    cacheHome :: FilePath,
+    daemonPid :: String
   }
 
 findDbusSessionConfig :: IO (Maybe FilePath)
@@ -64,8 +65,8 @@ findDbusSessionConfig = do
     Just exe -> do
       let prefix = takeDirectory (takeDirectory exe)
           candidates =
-            [ prefix </> "share" </> "dbus-1" </> "session.conf"
-            , prefix </> "etc" </> "dbus-1" </> "session.conf"
+            [ prefix </> "share" </> "dbus-1" </> "session.conf",
+              prefix </> "etc" </> "dbus-1" </> "session.conf"
             ]
       existing <- filterM doesFileExist candidates
       pure $ case existing of
@@ -108,13 +109,14 @@ setup = do
       setEnv "DBUS_SESSION_BUS_ADDRESS" address
       setEnv "DBUS_SESSION_BUS_PID" pidLine
       setEnv "XDG_CACHE_HOME" cachePath
-      pure BusEnv
-        { previousAddress = oldAddress
-        , previousPid = oldPid
-        , previousCacheHome = oldCacheHome
-        , cacheHome = cachePath
-        , daemonPid = pidLine
-        }
+      pure
+        BusEnv
+          { previousAddress = oldAddress,
+            previousPid = oldPid,
+            previousCacheHome = oldCacheHome,
+            cacheHome = cachePath,
+            daemonPid = pidLine
+          }
     _ ->
       error $
         "Failed to start test dbus-daemon: exit="
@@ -138,11 +140,12 @@ teardown BusEnv {..} = do
   restore "DBUS_SESSION_BUS_ADDRESS" previousAddress
   restore "DBUS_SESSION_BUS_PID" previousPid
   restore "XDG_CACHE_HOME" previousCacheHome
-  _ <- try (removeDirectoryRecursive cacheHome) ::
-    IO (Either SomeException ())
+  _ <-
+    try (removeDirectoryRecursive cacheHome) ::
+      IO (Either SomeException ())
   pure ()
   where
-    restore key value = maybe (unsetEnv key) (setEnv key) value
+    restore key = maybe (unsetEnv key) (setEnv key)
 
 startWatcher :: IO Client
 startWatcher = do
@@ -150,8 +153,8 @@ startWatcher = do
   (_, startFn) <-
     WatcherService.buildWatcher
       defaultWatcherParams
-        { watcherDBusClient = Just client
-        , watcherStop = pure ()
+        { watcherDBusClient = Just client,
+          watcherStop = pure ()
         }
   reply <- startFn
   reply `shouldBe` NamePrimaryOwner
@@ -166,14 +169,14 @@ registerSimpleItem ::
 registerSimpleItem client busName objectPath iconName = do
   let iface =
         Interface
-          { interfaceName = "org.kde.StatusNotifierItem"
-          , interfaceMethods = []
-          , interfaceProperties =
-              [ readOnlyProperty "IconName" (pure iconName)
-              , readOnlyProperty "OverlayIconName" (pure ("" :: String))
-              , readOnlyProperty "ItemIsMenu" (pure False)
-              ]
-          , interfaceSignals = []
+          { interfaceName = "org.kde.StatusNotifierItem",
+            interfaceMethods = [],
+            interfaceProperties =
+              [ readOnlyProperty "IconName" (pure iconName),
+                readOnlyProperty "OverlayIconName" (pure ("" :: String)),
+                readOnlyProperty "ItemIsMenu" (pure False)
+              ],
+            interfaceSignals = []
           }
       path = objectPath_ objectPath
 

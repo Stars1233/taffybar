@@ -4,7 +4,7 @@
 module Main where
 
 import Control.Monad
-import qualified DBus as DBus
+import qualified DBus
 import DBus.Client
 import Data.Char (toLower)
 import Data.Int
@@ -115,7 +115,9 @@ setupLayerShellWindow
   reserveSpace = do
     supported <- GtkLayerShell.isSupported
     unless supported $
-      logM "StatusNotifier.StandaloneWindow" WARNING $
+      logM
+        "StatusNotifier.StandaloneWindow"
+        WARNING
         "Wayland detected, but gtk-layer-shell is not supported; falling back to a regular toplevel window"
     when supported $ do
       Gtk.windowSetDecorated window False
@@ -211,7 +213,7 @@ setupLayerShellWindow
                       ExactSize h -> h
                       ScreenRatio p ->
                         floor $ p * fromIntegral availableHeight
-                  clampNonNegative x = if x < 0 then 0 else x
+                  clampNonNegative x = max x 0
                   centerOffset availSize size =
                     clampNonNegative $ (availSize - size) `div` 2
                   endOffset availSize size =
@@ -623,10 +625,14 @@ buildWindows
     logRuntimeInfo backendChoice backend
     watcherPresent <- hasStatusNotifierWatcher client
     unless watcherPresent $ do
-      logM "StatusNotifier" WARNING $
+      logM
+        "StatusNotifier"
+        WARNING
         "No StatusNotifierWatcher found on D-Bus (org.kde.StatusNotifierWatcher). Tray will likely be empty."
       unless startWatcher $
-        logM "StatusNotifier" WARNING $
+        logM
+          "StatusNotifier"
+          WARNING
           "Start a watcher first (recommended) or run with --watcher to start one in-process."
     _ <- getRootLogger
     pid <- getProcessID
@@ -722,7 +728,7 @@ buildWindows
           Gtk.windowSetTypeHint window Gdk.WindowTypeHintDock
           case backend of
             BackendX11 ->
-              when (not noStrut) $ setupStrutWindow config window
+              unless noStrut $ setupStrutWindow config window
             BackendWayland ->
               setupLayerShellWindow config window (not noStrut)
           maybe

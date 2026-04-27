@@ -37,12 +37,11 @@ import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 import System.Log.Logger (Priority (..), logM)
 import System.Taffybar.Context (TaffyIO, getStateDefault, taffyFork)
-import System.Taffybar.Hyprland (getHyprlandEventChan)
+import System.Taffybar.Hyprland (getHyprlandClient, getHyprlandEventChan)
 import qualified System.Taffybar.Information.Hyprland as Hypr
 import qualified System.Taffybar.Information.Hyprland.API as HyprAPI
 import qualified System.Taffybar.Information.Hyprland.Types as HyprTypes
 import System.Taffybar.Information.Layout.Model
-import System.Taffybar.Hyprland (getHyprlandClient)
 
 data HyprlandLayoutProviderConfig = HyprlandLayoutProviderConfig
   { layoutSnapshotGetter :: TaffyIO T.Text,
