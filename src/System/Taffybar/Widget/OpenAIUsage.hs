@@ -1,270 +1,476 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Widget for displaying OpenAI Codex subscription usage.
---
--- This currently uses the same ChatGPT OAuth token file that Codex writes at
--- @$CODEX_HOME/auth.json@ or @~/.codex/auth.json@ and calls ChatGPT's Codex
--- usage endpoint. The endpoint is not part of the public OpenAI API, so the
--- auth and endpoint pieces are configurable.
+-- | Widgets for displaying OpenAI Codex subscription usage.
 module System.Taffybar.Widget.OpenAIUsage
-  ( OpenAIUsageWidgetConfig (..),
-    OpenAIUsageAuth (..),
-    defaultOpenAIUsageWidgetConfig,
+  ( OpenAIUsageDisplayMode (..),
+    OpenAIUsageDisplayModeState,
+    OpenAIUsageLabelConfig (..),
+    OpenAIUsageStackConfig (..),
+    OpenAIUsageWindowSelector (..),
+    defaultOpenAIUsageLabelConfig,
+    defaultOpenAIUsageStackConfig,
+    openAIUsageLabelNew,
+    openAIUsageLabelNewWith,
+    openAIUsagePrimaryWindowLabelNew,
+    openAIUsageSecondaryWindowLabelNew,
+    openAIUsageStackNew,
+    openAIUsageStackNewWith,
     openAIUsageNew,
     openAIUsageNewWith,
+    formatOpenAIUsageWindowLabel,
+    formatOpenAIUsageSummaryLabel,
   )
 where
 
-import Control.Exception (SomeException, try)
-import Control.Monad.IO.Class (MonadIO)
-import Data.Aeson
-import qualified Data.ByteString.Lazy as LBS
-import Data.Maybe (catMaybes, fromMaybe, isJust, listToMaybe, mapMaybe)
+import Control.Concurrent (ThreadId, forkIO, killThread)
+import Control.Concurrent.MVar (MVar, newMVar, readMVar, swapMVar)
+import Control.Concurrent.STM (atomically)
+import Control.Concurrent.STM.TChan (TChan, dupTChan, newBroadcastTChanIO, readTChan, writeTChan)
+import Control.Monad (forM_, forever, void)
+import Control.Monad.IO.Class (liftIO)
+import Control.Monad.Trans.Reader (ask, runReaderT)
+import Data.Maybe (catMaybes, fromMaybe, isJust, mapMaybe)
 import qualified Data.Text as T
-import qualified Data.Text.Encoding as TE
-import GI.Gtk (Widget)
-import Network.HTTP.Simple
-import System.Directory (doesFileExist, getHomeDirectory)
-import System.Environment (lookupEnv)
-import System.FilePath ((</>))
-import System.Log.Logger (Priority (ERROR), logM)
-import System.Taffybar.Widget.Generic.PollingLabel
-  ( pollingLabelWithVariableDelayAndRefresh,
-  )
+import qualified GI.GLib as GLib
+import qualified GI.Gtk as Gtk
+import System.Taffybar.Context (TaffyIO, getStateDefault)
+import System.Taffybar.Information.OpenAIUsage
+import System.Taffybar.Util (postGUIASync)
 import System.Taffybar.Widget.Util (widgetSetClassGI)
 import Text.Printf (printf)
 
-data OpenAIUsageWidgetConfig = OpenAIUsageWidgetConfig
-  { openAIUsagePollInterval :: Double,
-    openAIUsageEndpoint :: String,
-    openAIUsageUserAgent :: String,
-    openAIUsageAuthPath :: Maybe FilePath,
-    openAIUsageFallbackLabel :: T.Text
+data OpenAIUsageDisplayMode
+  = OpenAIUsageDisplayUsed
+  | OpenAIUsageDisplayRemaining
+  deriving (Eq, Show)
+
+newtype OpenAIUsageDisplayModeState
+  = OpenAIUsageDisplayModeState
+      (MVar OpenAIUsageDisplayMode, TChan OpenAIUsageDisplayMode)
+
+data OpenAIUsageLabelConfig = OpenAIUsageLabelConfig
+  { openAIUsageLabelInfoConfig :: OpenAIUsageConfig,
+    openAIUsageLabelDefaultDisplayMode :: OpenAIUsageDisplayMode,
+    openAIUsageLabelFallbackText :: T.Text,
+    openAIUsageLabelClass :: T.Text,
+    openAIUsageLabelFormatter :: OpenAIUsageDisplayMode -> OpenAIUsageInfo -> T.Text,
+    openAIUsageLabelUnavailableFormatter :: T.Text -> T.Text,
+    openAIUsageLabelTooltipFormatter :: OpenAIUsageDisplayMode -> OpenAIUsageSnapshot -> Maybe T.Text
   }
 
-defaultOpenAIUsageWidgetConfig :: OpenAIUsageWidgetConfig
-defaultOpenAIUsageWidgetConfig =
-  OpenAIUsageWidgetConfig
-    { openAIUsagePollInterval = 60 * 5,
-      openAIUsageEndpoint = "https://chatgpt.com/backend-api/codex/usage",
-      openAIUsageUserAgent = "taffybar-openai-usage",
-      openAIUsageAuthPath = Nothing,
-      openAIUsageFallbackLabel = "AI n/a"
+data OpenAIUsageWindowSelector
+  = OpenAIUsagePrimaryWindow
+  | OpenAIUsageSecondaryWindow
+  deriving (Eq, Show)
+
+data OpenAIUsageStackConfig = OpenAIUsageStackConfig
+  { openAIUsageStackInfoConfig :: OpenAIUsageConfig,
+    openAIUsageStackDefaultDisplayMode :: OpenAIUsageDisplayMode,
+    openAIUsageStackFallbackText :: T.Text
+  }
+
+defaultOpenAIUsageLabelConfig :: OpenAIUsageLabelConfig
+defaultOpenAIUsageLabelConfig =
+  OpenAIUsageLabelConfig
+    { openAIUsageLabelInfoConfig = defaultOpenAIUsageConfig,
+      openAIUsageLabelDefaultDisplayMode = OpenAIUsageDisplayUsed,
+      openAIUsageLabelFallbackText = "AI n/a",
+      openAIUsageLabelClass = "openai-usage-label",
+      openAIUsageLabelFormatter = formatOpenAIUsageSummaryLabel,
+      openAIUsageLabelUnavailableFormatter = const "AI n/a",
+      openAIUsageLabelTooltipFormatter = formatOpenAIUsageTooltip
     }
 
-data OpenAIUsageAuth = OpenAIUsageAuth
-  { openAIUsageAccessToken :: T.Text,
-    openAIUsageAccountId :: T.Text
-  }
+defaultOpenAIUsageStackConfig :: OpenAIUsageStackConfig
+defaultOpenAIUsageStackConfig =
+  OpenAIUsageStackConfig
+    { openAIUsageStackInfoConfig = defaultOpenAIUsageConfig,
+      openAIUsageStackDefaultDisplayMode = OpenAIUsageDisplayUsed,
+      openAIUsageStackFallbackText = "n/a"
+    }
 
-instance FromJSON OpenAIUsageAuth where
-  parseJSON = withObject "OpenAIUsageAuth" $ \root -> do
-    tokens <- root .: "tokens"
-    OpenAIUsageAuth
-      <$> tokens .: "access_token"
-      <*> tokens .: "account_id"
+openAIUsageNew :: TaffyIO Gtk.Widget
+openAIUsageNew = openAIUsageLabelNew
 
-data UsageResponse = UsageResponse
-  { usagePlanType :: Maybe T.Text,
-    usageRateLimit :: RateLimit,
-    usageAdditionalRateLimits :: [AdditionalRateLimit],
-    usageCredits :: Maybe Credits,
-    usageReachedType :: Maybe T.Text
-  }
+openAIUsageNewWith :: OpenAIUsageLabelConfig -> TaffyIO Gtk.Widget
+openAIUsageNewWith = openAIUsageLabelNewWith
 
-instance FromJSON UsageResponse where
-  parseJSON = withObject "UsageResponse" $ \o ->
-    UsageResponse
-      <$> o .:? "plan_type"
-      <*> o .: "rate_limit"
-      <*> o .:? "additional_rate_limits" .!= []
-      <*> o .:? "credits"
-      <*> o .:? "rate_limit_reached_type"
+openAIUsageLabelNew :: TaffyIO Gtk.Widget
+openAIUsageLabelNew = openAIUsageLabelNewWith defaultOpenAIUsageLabelConfig
 
-data AdditionalRateLimit = AdditionalRateLimit
-  { additionalLimitName :: Maybe T.Text,
-    additionalRateLimit :: RateLimit
-  }
+openAIUsagePrimaryWindowLabelNew :: TaffyIO Gtk.Widget
+openAIUsagePrimaryWindowLabelNew =
+  openAIUsageLabelNewWith $
+    windowLabelConfig OpenAIUsagePrimaryWindow defaultOpenAIUsageStackConfig
 
-instance FromJSON AdditionalRateLimit where
-  parseJSON = withObject "AdditionalRateLimit" $ \o ->
-    AdditionalRateLimit
-      <$> o .:? "limit_name"
-      <*> o .: "rate_limit"
+openAIUsageSecondaryWindowLabelNew :: TaffyIO Gtk.Widget
+openAIUsageSecondaryWindowLabelNew =
+  openAIUsageLabelNewWith $
+    windowLabelConfig OpenAIUsageSecondaryWindow defaultOpenAIUsageStackConfig
 
-data RateLimit = RateLimit
-  { rateLimitAllowed :: Bool,
-    rateLimitReached :: Bool,
-    rateLimitPrimaryWindow :: Maybe RateLimitWindow,
-    rateLimitSecondaryWindow :: Maybe RateLimitWindow
-  }
+openAIUsageStackNew :: TaffyIO Gtk.Widget
+openAIUsageStackNew = openAIUsageStackNewWith defaultOpenAIUsageStackConfig
 
-instance FromJSON RateLimit where
-  parseJSON = withObject "RateLimit" $ \o ->
-    RateLimit
-      <$> o .:? "allowed" .!= True
-      <*> o .:? "limit_reached" .!= False
-      <*> o .:? "primary_window"
-      <*> o .:? "secondary_window"
+openAIUsageStackNewWith :: OpenAIUsageStackConfig -> TaffyIO Gtk.Widget
+openAIUsageStackNewWith config = do
+  primary <- openAIUsageLabelNewWith $ windowLabelConfig OpenAIUsagePrimaryWindow config
+  secondary <- openAIUsageLabelNewWith $ windowLabelConfig OpenAIUsageSecondaryWindow config
+  liftIO $ do
+    box <- Gtk.boxNew Gtk.OrientationVertical 0
+    _ <- widgetSetClassGI box "openai-usage-stack"
+    Gtk.boxPackStart box primary False False 0
+    Gtk.boxPackStart box secondary False False 0
+    Gtk.widgetShowAll box
+    Gtk.toWidget box
 
-data RateLimitWindow = RateLimitWindow
-  { windowUsedPercent :: Int,
-    windowDurationSeconds :: Maybe Int,
-    windowResetAfterSeconds :: Maybe Int
-  }
+windowLabelConfig :: OpenAIUsageWindowSelector -> OpenAIUsageStackConfig -> OpenAIUsageLabelConfig
+windowLabelConfig selector stackConfig =
+  defaultOpenAIUsageLabelConfig
+    { openAIUsageLabelInfoConfig = openAIUsageStackInfoConfig stackConfig,
+      openAIUsageLabelDefaultDisplayMode = openAIUsageStackDefaultDisplayMode stackConfig,
+      openAIUsageLabelFallbackText = openAIUsageStackFallbackText stackConfig,
+      openAIUsageLabelClass = "openai-usage-window-label",
+      openAIUsageLabelFormatter = formatOpenAIUsageWindowLabel selector,
+      openAIUsageLabelUnavailableFormatter = const (openAIUsageStackFallbackText stackConfig)
+    }
 
-instance FromJSON RateLimitWindow where
-  parseJSON = withObject "RateLimitWindow" $ \o ->
-    RateLimitWindow
-      <$> o .: "used_percent"
-      <*> o .:? "limit_window_seconds"
-      <*> o .:? "reset_after_seconds"
+openAIUsageLabelNewWith :: OpenAIUsageLabelConfig -> TaffyIO Gtk.Widget
+openAIUsageLabelNewWith config = do
+  let infoConfig = openAIUsageLabelInfoConfig config
+  usageChan <- getOpenAIUsageChan infoConfig
+  initialSnapshot <- getOpenAIUsageState infoConfig
+  displayState <- getOpenAIUsageDisplayModeState (openAIUsageLabelDefaultDisplayMode config)
+  ctx <- ask
 
-data Credits = Credits
-  { creditsHasCredits :: Bool,
-    creditsUnlimited :: Bool,
-    creditsBalance :: Maybe T.Text
-  }
+  liftIO $ do
+    label <- Gtk.labelNew (Just (openAIUsageLabelFallbackText config))
+    ebox <- Gtk.eventBoxNew
+    snapshotVar <- newMVar initialSnapshot
+    let refreshNow = runReaderT (forceOpenAIUsageRefresh infoConfig) ctx
+    _ <- widgetSetClassGI label (openAIUsageLabelClass config)
+    _ <- widgetSetClassGI ebox "openai-usage"
+    Gtk.containerAdd ebox label
+    updateLabelFromState config label displayState initialSnapshot
 
-instance FromJSON Credits where
-  parseJSON = withObject "Credits" $ \o ->
-    Credits
-      <$> o .:? "has_credits" .!= False
-      <*> o .:? "unlimited" .!= False
-      <*> o .:? "balance"
+    void $ Gtk.onWidgetRealize ebox $ do
+      usageThread <- forkUsageListener config label displayState snapshotVar usageChan
+      modeThread <- forkDisplayModeListener config label displayState snapshotVar
+      void $ Gtk.onWidgetUnrealize ebox $ do
+        killThread usageThread
+        killThread modeThread
 
-openAIUsageNew :: (MonadIO m) => m Widget
-openAIUsageNew = openAIUsageNewWith defaultOpenAIUsageWidgetConfig
+    void $
+      Gtk.onWidgetButtonPressEvent ebox $ \_event -> do
+        refreshNow
+        showUsageMenu ebox config label displayState snapshotVar refreshNow
+        return True
 
-openAIUsageNewWith :: (MonadIO m) => OpenAIUsageWidgetConfig -> m Widget
-openAIUsageNewWith config =
-  pollingLabelWithVariableDelayAndRefresh action True
-    >>= (`widgetSetClassGI` "openai-usage")
-  where
-    action = do
-      result <- try $ fetchAndFormatUsage config
-      case result of
-        Right formatted -> return formatted
-        Left (err :: SomeException) -> do
-          logM "System.Taffybar.Widget.OpenAIUsage" ERROR (show err)
-          return
-            ( openAIUsageFallbackLabel config,
-              Just "Unable to fetch OpenAI usage",
-              min 60 (openAIUsagePollInterval config)
-            )
+    Gtk.widgetShowAll ebox
+    Gtk.toWidget ebox
 
-fetchAndFormatUsage :: OpenAIUsageWidgetConfig -> IO (T.Text, Maybe T.Text, Double)
-fetchAndFormatUsage config = do
-  auth <- readOpenAIUsageAuth config
-  usage <- fetchUsage config auth
-  let label = formatUsageLabel usage
-      tooltip = formatUsageTooltip usage
-  return (label, Just tooltip, openAIUsagePollInterval config)
+getOpenAIUsageDisplayModeState :: OpenAIUsageDisplayMode -> TaffyIO OpenAIUsageDisplayModeState
+getOpenAIUsageDisplayModeState defaultMode =
+  getStateDefault $ liftIO $ do
+    modeVar <- newMVar defaultMode
+    modeChan <- newBroadcastTChanIO
+    return $ OpenAIUsageDisplayModeState (modeVar, modeChan)
 
-readOpenAIUsageAuth :: OpenAIUsageWidgetConfig -> IO OpenAIUsageAuth
-readOpenAIUsageAuth config = do
-  path <- maybe defaultCodexAuthPath return (openAIUsageAuthPath config)
-  bytes <- LBS.readFile path
-  either fail return $ eitherDecode bytes
+forkUsageListener ::
+  OpenAIUsageLabelConfig ->
+  Gtk.Label ->
+  OpenAIUsageDisplayModeState ->
+  MVar OpenAIUsageSnapshot ->
+  TChan OpenAIUsageSnapshot ->
+  IO ThreadId
+forkUsageListener config label displayState snapshotVar usageChan = do
+  ourUsageChan <- atomically $ dupTChan usageChan
+  forkIO $
+    forever $ do
+      snapshot <- atomically $ readTChan ourUsageChan
+      void $ swapMVar snapshotVar snapshot
+      updateLabelFromState config label displayState snapshot
 
-defaultCodexAuthPath :: IO FilePath
-defaultCodexAuthPath = do
-  codexHome <- lookupEnv "CODEX_HOME"
-  case codexHome of
-    Just dir -> return $ dir </> "auth.json"
-    Nothing -> do
-      home <- getHomeDirectory
-      let path = home </> ".codex" </> "auth.json"
-      exists <- doesFileExist path
-      if exists
-        then return path
-        else fail "No Codex auth file found"
+forkDisplayModeListener ::
+  OpenAIUsageLabelConfig ->
+  Gtk.Label ->
+  OpenAIUsageDisplayModeState ->
+  MVar OpenAIUsageSnapshot ->
+  IO ThreadId
+forkDisplayModeListener config label displayState@(OpenAIUsageDisplayModeState (_, modeChan)) snapshotVar = do
+  ourModeChan <- atomically $ dupTChan modeChan
+  forkIO $
+    forever $ do
+      _ <- atomically $ readTChan ourModeChan
+      snapshot <- readMVar snapshotVar
+      updateLabelFromState config label displayState snapshot
 
-fetchUsage :: OpenAIUsageWidgetConfig -> OpenAIUsageAuth -> IO UsageResponse
-fetchUsage config auth = do
-  request0 <- parseRequest $ openAIUsageEndpoint config
-  let request =
-        setRequestHeader "Authorization" ["Bearer " <> TE.encodeUtf8 (openAIUsageAccessToken auth)] $
-          setRequestHeader "ChatGPT-Account-Id" [TE.encodeUtf8 (openAIUsageAccountId auth)] $
-            setRequestHeader "Accept" ["application/json"] $
-              setRequestHeader "User-Agent" [TE.encodeUtf8 (T.pack (openAIUsageUserAgent config))] request0
-  response <- httpLBS request
-  let statusCode = getResponseStatusCode response
-      body = getResponseBody response
-  if statusCode >= 200 && statusCode < 300
-    then either fail return $ eitherDecode body
-    else fail $ "OpenAI usage endpoint returned HTTP " <> show statusCode
+updateLabelFromState ::
+  OpenAIUsageLabelConfig ->
+  Gtk.Label ->
+  OpenAIUsageDisplayModeState ->
+  OpenAIUsageSnapshot ->
+  IO ()
+updateLabelFromState config label displayState snapshot = do
+  displayMode <- readDisplayMode displayState
+  let labelText = formatSnapshotLabel config displayMode snapshot
+      tooltipText = openAIUsageLabelTooltipFormatter config displayMode snapshot
+  postGUIASync $ do
+    Gtk.labelSetText label labelText
+    Gtk.widgetSetTooltipText label tooltipText
 
-formatUsageLabel :: UsageResponse -> T.Text
-formatUsageLabel usage =
-  let percentText = maybe "n/a" (T.pack . printf "%d%%") $ usagePercent usage
-      reached = rateLimitReached (usageRateLimit usage) || isJust (usageReachedType usage)
-   in (if reached then "AI ! " else "AI ") <> percentText
+formatSnapshotLabel :: OpenAIUsageLabelConfig -> OpenAIUsageDisplayMode -> OpenAIUsageSnapshot -> T.Text
+formatSnapshotLabel config mode snapshot =
+  case snapshot of
+    OpenAIUsageAvailable info -> openAIUsageLabelFormatter config mode info
+    OpenAIUsageUnavailable message -> openAIUsageLabelUnavailableFormatter config message
 
-formatUsageTooltip :: UsageResponse -> T.Text
-formatUsageTooltip usage =
-  T.intercalate "\n" $
-    catMaybes
-      [ ("Plan: " <>) <$> usagePlanType usage,
-        Just $ "Default: " <> formatRateLimit (usageRateLimit usage),
-        formatAdditional <$> listToMaybe (usageAdditionalRateLimits usage),
-        formatCredits <$> usageCredits usage,
-        ("Reached: " <>) <$> usageReachedType usage
-      ]
+readDisplayMode :: OpenAIUsageDisplayModeState -> IO OpenAIUsageDisplayMode
+readDisplayMode (OpenAIUsageDisplayModeState (modeVar, _)) = readMVar modeVar
 
-usagePercent :: UsageResponse -> Maybe Int
-usagePercent usage =
-  maximumMaybe $
-    windowPercents (usageRateLimit usage)
-      <> concatMap (windowPercents . additionalRateLimit) (usageAdditionalRateLimits usage)
+setDisplayMode :: OpenAIUsageDisplayModeState -> OpenAIUsageDisplayMode -> IO ()
+setDisplayMode (OpenAIUsageDisplayModeState (modeVar, modeChan)) mode = do
+  void $ swapMVar modeVar mode
+  atomically $ writeTChan modeChan mode
 
-windowPercents :: RateLimit -> [Int]
-windowPercents limit =
-  map windowUsedPercent $
-    catMaybes [rateLimitPrimaryWindow limit, rateLimitSecondaryWindow limit]
+toggleDisplayMode :: OpenAIUsageDisplayMode -> OpenAIUsageDisplayMode
+toggleDisplayMode OpenAIUsageDisplayUsed = OpenAIUsageDisplayRemaining
+toggleDisplayMode OpenAIUsageDisplayRemaining = OpenAIUsageDisplayUsed
 
-maximumMaybe :: (Ord a) => [a] -> Maybe a
-maximumMaybe [] = Nothing
-maximumMaybe values = Just $ maximum values
+formatOpenAIUsageSummaryLabel :: OpenAIUsageDisplayMode -> OpenAIUsageInfo -> T.Text
+formatOpenAIUsageSummaryLabel displayMode info =
+  let limit = openAIUsageRateLimit info
+      windows =
+        T.intercalate
+          " "
+          [ fromMaybeText "5h" $ formatWindowLabel displayMode "5h" <$> openAIUsagePrimaryWindow limit,
+            fromMaybeText "7d" $ formatWindowLabel displayMode "7d" <$> openAIUsageSecondaryWindow limit
+          ]
+      reached = openAIUsageLimitReached limit || isJust (openAIUsageReachedType info)
+   in (if reached then "AI ! " else "AI ") <> windows
 
-formatAdditional :: AdditionalRateLimit -> T.Text
-formatAdditional additional =
-  fromMaybe "Additional" (additionalLimitName additional)
+formatOpenAIUsageWindowLabel :: OpenAIUsageWindowSelector -> OpenAIUsageDisplayMode -> OpenAIUsageInfo -> T.Text
+formatOpenAIUsageWindowLabel selector displayMode info =
+  case selectedWindow selector (openAIUsageRateLimit info) of
+    Nothing -> windowSelectorFallbackName selector <> " n/a"
+    Just window -> formatWindowLabel displayMode (windowSelectorFallbackName selector) window
+
+formatOpenAIUsageTooltip :: OpenAIUsageDisplayMode -> OpenAIUsageSnapshot -> Maybe T.Text
+formatOpenAIUsageTooltip displayMode snapshot =
+  Just $
+    case snapshot of
+      OpenAIUsageUnavailable message -> "Unable to fetch OpenAI usage: " <> message
+      OpenAIUsageAvailable info ->
+        T.intercalate "\n" $
+          catMaybes
+            [ ("Plan: " <>) <$> openAIUsagePlanType info,
+              Just $ "Display: " <> displayModeText displayMode,
+              Just $ "Default: " <> formatRateLimit displayMode (openAIUsageRateLimit info),
+              formatAdditionalTooltip displayMode (openAIUsageAdditionalRateLimits info),
+              formatCredits <$> openAIUsageCredits info,
+              ("Reached: " <>) <$> openAIUsageReachedType info
+            ]
+
+showUsageMenu ::
+  Gtk.EventBox ->
+  OpenAIUsageLabelConfig ->
+  Gtk.Label ->
+  OpenAIUsageDisplayModeState ->
+  MVar OpenAIUsageSnapshot ->
+  IO () ->
+  IO ()
+showUsageMenu anchor config label displayState snapshotVar refreshNow = do
+  currentEvent <- Gtk.getCurrentEvent
+  snapshot <- readMVar snapshotVar
+  displayMode <- readDisplayMode displayState
+  menu <- Gtk.menuNew
+  Gtk.menuAttachToWidget menu anchor Nothing
+
+  appendInfoItem menu "OpenAI Codex usage"
+  appendSnapshotMenuItems menu displayMode snapshot
+
+  appendSeparator menu
+  toggleItem <-
+    Gtk.menuItemNewWithLabel $
+      "Display: "
+        <> displayModeText displayMode
+        <> " (toggle)"
+  void $
+    Gtk.onMenuItemActivate toggleItem $ do
+      setDisplayMode displayState (toggleDisplayMode displayMode)
+      readMVar snapshotVar >>= updateLabelFromState config label displayState
+  Gtk.menuShellAppend menu toggleItem
+
+  refreshItem <- Gtk.menuItemNewWithLabel ("Refresh" :: T.Text)
+  void $ Gtk.onMenuItemActivate refreshItem refreshNow
+  Gtk.menuShellAppend menu refreshItem
+
+  void $
+    Gtk.onWidgetHide menu $
+      void $
+        GLib.idleAdd GLib.PRIORITY_LOW $ do
+          Gtk.widgetDestroy menu
+          return False
+
+  Gtk.widgetShowAll menu
+  Gtk.menuPopupAtPointer menu currentEvent
+
+appendInfoItem :: Gtk.Menu -> T.Text -> IO ()
+appendInfoItem menu text = do
+  item <- Gtk.menuItemNewWithLabel text
+  Gtk.widgetSetSensitive item False
+  Gtk.menuShellAppend menu item
+
+appendSeparator :: Gtk.Menu -> IO ()
+appendSeparator menu = do
+  sep <- Gtk.separatorMenuItemNew
+  Gtk.menuShellAppend menu sep
+
+appendSnapshotMenuItems :: Gtk.Menu -> OpenAIUsageDisplayMode -> OpenAIUsageSnapshot -> IO ()
+appendSnapshotMenuItems menu _ (OpenAIUsageUnavailable message) =
+  appendMenuSection menu "Status" ["Unavailable: " <> message]
+appendSnapshotMenuItems menu displayMode (OpenAIUsageAvailable info) = do
+  appendMenuSection
+    menu
+    "Account"
+    ( catMaybes
+        [ ("Plan: " <>) <$> openAIUsagePlanType info,
+          Just $ "Display: " <> displayModeText displayMode
+        ]
+    )
+  appendMenuSection
+    menu
+    "Default Limit"
+    (formatRateLimitMenuLines displayMode (openAIUsageRateLimit info))
+  appendMenuSection
+    menu
+    "Credits"
+    (catMaybes [formatCredits <$> openAIUsageCredits info])
+  appendMenuSection
+    menu
+    "Limit Reached"
+    (catMaybes [("Type: " <>) <$> openAIUsageReachedType info])
+  forM_ (openAIUsageAdditionalRateLimits info) $ \additional ->
+    appendMenuSection
+      menu
+      (fromMaybeText "Additional Limit" (openAIUsageAdditionalLimitName additional))
+      (formatRateLimitMenuLines displayMode (openAIUsageAdditionalRateLimit additional))
+
+appendMenuSection :: Gtk.Menu -> T.Text -> [T.Text] -> IO ()
+appendMenuSection _ _ [] = return ()
+appendMenuSection menu title items = do
+  appendSeparator menu
+  appendInfoItem menu title
+  forM_ items (appendInfoItem menu)
+
+formatRateLimitMenuLines :: OpenAIUsageDisplayMode -> OpenAIUsageRateLimit -> [T.Text]
+formatRateLimitMenuLines displayMode limit =
+  catMaybes
+    [ formatWindowMenuLine displayMode "5h" <$> openAIUsagePrimaryWindow limit,
+      formatWindowMenuLine displayMode "7d" <$> openAIUsageSecondaryWindow limit
+    ]
+    <> [formatRateLimitStatus limit]
+
+formatWindowMenuLine :: OpenAIUsageDisplayMode -> T.Text -> OpenAIUsageWindow -> T.Text
+formatWindowMenuLine displayMode fallbackName window =
+  formatWindowName fallbackName window
     <> ": "
-    <> formatRateLimit (additionalRateLimit additional)
+    <> formatWindowPercent displayMode window
+    <> " "
+    <> displayModeText displayMode
+    <> maybe "" ((", resets in " <>) . formatDuration) (openAIUsageResetAfterSeconds window)
 
-formatRateLimit :: RateLimit -> T.Text
-formatRateLimit limit =
+formatRateLimitStatus :: OpenAIUsageRateLimit -> T.Text
+formatRateLimitStatus limit
+  | openAIUsageLimitReached limit = "Status: reached"
+  | not (openAIUsageAllowed limit) = "Status: blocked"
+  | otherwise = "Status: allowed"
+
+formatAdditionalTooltip :: OpenAIUsageDisplayMode -> [OpenAIUsageAdditionalRateLimit] -> Maybe T.Text
+formatAdditionalTooltip _ [] = Nothing
+formatAdditionalTooltip displayMode additional =
+  Just $ T.intercalate "\n" $ map (formatAdditional displayMode) additional
+
+formatAdditional :: OpenAIUsageDisplayMode -> OpenAIUsageAdditionalRateLimit -> T.Text
+formatAdditional displayMode additional =
+  fromMaybeText "Additional" (openAIUsageAdditionalLimitName additional)
+    <> ": "
+    <> formatRateLimit displayMode (openAIUsageAdditionalRateLimit additional)
+
+formatRateLimit :: OpenAIUsageDisplayMode -> OpenAIUsageRateLimit -> T.Text
+formatRateLimit displayMode limit =
   let windows =
         T.intercalate
           ", "
           ( mapMaybe
-              (uncurry formatWindow)
-              [ ("short", rateLimitPrimaryWindow limit),
-                ("long", rateLimitSecondaryWindow limit)
+              (uncurry (formatWindow displayMode))
+              [ ("short", openAIUsagePrimaryWindow limit),
+                ("long", openAIUsageSecondaryWindow limit)
               ]
           )
       status
-        | rateLimitReached limit = "reached"
-        | not (rateLimitAllowed limit) = "blocked"
+        | openAIUsageLimitReached limit = "reached"
+        | not (openAIUsageAllowed limit) = "blocked"
         | otherwise = "allowed"
    in windows <> " (" <> status <> ")"
 
-formatWindow :: T.Text -> Maybe RateLimitWindow -> Maybe T.Text
-formatWindow _ Nothing = Nothing
-formatWindow name (Just window) =
+formatWindow :: OpenAIUsageDisplayMode -> T.Text -> Maybe OpenAIUsageWindow -> Maybe T.Text
+formatWindow _ _ Nothing = Nothing
+formatWindow displayMode name (Just window) =
   Just $
-    name
+    formatWindowName name window
       <> " "
-      <> T.pack (printf "%d%%" (windowUsedPercent window))
-      <> maybe "" ((" / " <>) . formatDuration) (windowDurationSeconds window)
-      <> maybe "" ((", resets in " <>) . formatDuration) (windowResetAfterSeconds window)
+      <> formatWindowPercent displayMode window
+      <> " "
+      <> displayModeText displayMode
+      <> maybe "" ((" / " <>) . formatDuration) (openAIUsageWindowDurationSeconds window)
+      <> maybe "" ((", resets in " <>) . formatDuration) (openAIUsageResetAfterSeconds window)
 
-formatCredits :: Credits -> T.Text
+formatWindowLabel :: OpenAIUsageDisplayMode -> T.Text -> OpenAIUsageWindow -> T.Text
+formatWindowLabel displayMode fallbackName window =
+  formatWindowName fallbackName window
+    <> " "
+    <> formatWindowPercentWithIndicator displayMode window
+
+formatWindowName :: T.Text -> OpenAIUsageWindow -> T.Text
+formatWindowName fallbackName window =
+  maybe fallbackName formatDuration (openAIUsageWindowDurationSeconds window)
+
+formatWindowPercent :: OpenAIUsageDisplayMode -> OpenAIUsageWindow -> T.Text
+formatWindowPercent displayMode window =
+  T.pack $ printf "%d%%" $ displayPercent displayMode window
+
+formatWindowPercentWithIndicator :: OpenAIUsageDisplayMode -> OpenAIUsageWindow -> T.Text
+formatWindowPercentWithIndicator displayMode window =
+  formatWindowPercent displayMode window <> displayModeIndicator displayMode
+
+displayPercent :: OpenAIUsageDisplayMode -> OpenAIUsageWindow -> Int
+displayPercent OpenAIUsageDisplayUsed = openAIUsageUsedPercent
+displayPercent OpenAIUsageDisplayRemaining = max 0 . (100 -) . openAIUsageUsedPercent
+
+displayModeText :: OpenAIUsageDisplayMode -> T.Text
+displayModeText OpenAIUsageDisplayUsed = "used"
+displayModeText OpenAIUsageDisplayRemaining = "remaining"
+
+displayModeIndicator :: OpenAIUsageDisplayMode -> T.Text
+displayModeIndicator OpenAIUsageDisplayUsed = "u"
+displayModeIndicator OpenAIUsageDisplayRemaining = "r"
+
+formatCredits :: OpenAIUsageCredits -> T.Text
 formatCredits credits =
   "Credits: "
-    <> (if creditsUnlimited credits then "unlimited" else fromMaybe "0" (creditsBalance credits))
-    <> if creditsHasCredits credits then " available" else ""
+    <> ( if openAIUsageCreditsUnlimited credits
+           then "unlimited"
+           else fromMaybeText "0" (openAIUsageCreditsBalance credits)
+       )
+    <> if openAIUsageHasCredits credits then " available" else ""
+
+selectedWindow :: OpenAIUsageWindowSelector -> OpenAIUsageRateLimit -> Maybe OpenAIUsageWindow
+selectedWindow OpenAIUsagePrimaryWindow = openAIUsagePrimaryWindow
+selectedWindow OpenAIUsageSecondaryWindow = openAIUsageSecondaryWindow
+
+windowSelectorFallbackName :: OpenAIUsageWindowSelector -> T.Text
+windowSelectorFallbackName OpenAIUsagePrimaryWindow = "5h"
+windowSelectorFallbackName OpenAIUsageSecondaryWindow = "7d"
 
 formatDuration :: Int -> T.Text
 formatDuration seconds
@@ -272,3 +478,6 @@ formatDuration seconds
   | seconds < 3600 = T.pack $ printf "%dm" (seconds `div` 60)
   | seconds < 86400 = T.pack $ printf "%dh" (seconds `div` 3600)
   | otherwise = T.pack $ printf "%dd" (seconds `div` 86400)
+
+fromMaybeText :: T.Text -> Maybe T.Text -> T.Text
+fromMaybeText = fromMaybe

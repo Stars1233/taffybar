@@ -157,6 +157,7 @@ library
                  , System.Taffybar.Information.Network
                  , System.Taffybar.Information.Temperature
                  , System.Taffybar.Information.NetworkManager
+                 , System.Taffybar.Information.OpenAIUsage
                  , System.Taffybar.Information.PowerProfiles
                  , System.Taffybar.Information.Privacy
                  , System.Taffybar.Information.ScreenLock
