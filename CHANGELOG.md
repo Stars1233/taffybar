@@ -4,19 +4,45 @@
 
 * Add structured OpenAI usage information and an OpenAI usage widget.
 * Add Anthropic usage information and an Anthropic usage widget.
+* Expose the new OpenAI and Anthropic usage information/widget modules from
+  the library.
 
 ## Fixes
 
 * Refresh window state after Hyprland reconnects.
-* Fix backend detection and X11 strut sizing.
+* Fix backend detection by preparing display environment variables before GTK
+  initialization, preferring explicit X11 sessions over stale Wayland sockets,
+  validating live Hyprland sockets, and detecting the backend from the GDK
+  display when possible.
+* Fix X11 strut/window handling by safely checking that realized GTK windows
+  are X11 windows before lowering them.
 * Handle non-X11 GDK windows safely.
 * Stabilize CSS loading for themed end widgets.
+* Apply end-widget pill palettes directly at runtime and use
+  `nth-last-child` selectors for end pill rotation.
 
 ## Refactors
 
 * Decouple layout and workspace/window information providers from widget
   rendering, and move shared workspace/window support helpers out of widget
   modules.
+* Clean up imports and internal helper code in the Hyprland layout and
+  workspaces modules.
+* Refresh vendored companion-package code in the monorepo, including
+  `dbus-hslogger`, `dbus-menu`, `gtk-sni-tray`, `gtk-strut`,
+  `status-notifier-item`, `xdg-desktop-entry`, and `gtk-scaling-image`.
+
+## Tests
+
+* Add backend-detection coverage for explicit X11 sessions when ambient
+  Wayland sockets are present.
+* Add `network` to the unit-test dependencies for Unix socket test support.
+* Clean up unit-test imports.
+
+## Packaging
+
+* Bump the package version to 7.1.0.
+* Update `flake.lock`.
 
 # 7.0.1
 
