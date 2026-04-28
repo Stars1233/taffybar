@@ -16,7 +16,7 @@ module System.Taffybar.Information.OpenAIUsage
     OpenAIUsageWindow (..),
     OpenAIUsageCredits (..),
     getOpenAIUsageInfo,
-    pollOpenAIUsage,
+    updateOpenAIUsage,
     getOpenAIUsageChan,
     getOpenAIUsageState,
     forceOpenAIUsageRefresh,
@@ -154,14 +154,14 @@ getOpenAIUsageInfo config = do
   auth <- readOpenAIUsageAuth config
   fetchOpenAIUsage config auth
 
-pollOpenAIUsage :: OpenAIUsageConfig -> IO OpenAIUsageSnapshot
-pollOpenAIUsage config = do
+updateOpenAIUsage :: OpenAIUsageConfig -> IO OpenAIUsageSnapshot
+updateOpenAIUsage config = do
   result <- try $ getOpenAIUsageInfo config
   case result of
     Right info -> return $ OpenAIUsageAvailable info
     Left (err :: SomeException) -> do
       let message = T.pack $ show err
-      logM logName WARNING $ "OpenAI usage poll failed: " <> show err
+      logM logName WARNING $ "OpenAI usage update failed: " <> show err
       return $ OpenAIUsageUnavailable message
 
 readOpenAIUsageAuth :: OpenAIUsageConfig -> IO OpenAIUsageAuth
@@ -224,7 +224,7 @@ setupOpenAIUsageChanVar :: OpenAIUsageConfig -> TaffyIO OpenAIUsageChanVar
 setupOpenAIUsageChanVar config = getStateDefault $ do
   chan <- liftIO newBroadcastTChanIO
   refreshChan <- liftIO newTChanIO
-  initial <- liftIO $ pollOpenAIUsage config
+  initial <- liftIO $ updateOpenAIUsage config
   var <- liftIO $ newMVar initial
   wakeupChan <- getWakeupChannelForDelay (openAIUsagePollInterval config)
   ourWakeupChan <- liftIO $ atomically $ dupTChan wakeupChan
@@ -235,16 +235,16 @@ setupOpenAIUsageChanVar config = getStateDefault $ do
           atomically $
             void (readTChan refreshChan)
               `orElse` void (readTChan ourWakeupChan)
-          updateOpenAIUsage config chan var
+          refreshOpenAIUsageState config chan var
   return $ OpenAIUsageChanVar (chan, var, refreshChan)
 
-updateOpenAIUsage ::
+refreshOpenAIUsageState ::
   OpenAIUsageConfig ->
   TChan OpenAIUsageSnapshot ->
   MVar OpenAIUsageSnapshot ->
   IO ()
-updateOpenAIUsage config chan var = do
-  snapshot <- pollOpenAIUsage config
+refreshOpenAIUsageState config chan var = do
+  snapshot <- updateOpenAIUsage config
   void $ swapMVar var snapshot
   atomically $ writeTChan chan snapshot
 
