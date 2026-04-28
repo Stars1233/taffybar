@@ -1,4 +1,16 @@
-# Unreleased
+# 7.1.0
+
+## New Features
+
+* Add structured OpenAI usage information and an OpenAI usage widget.
+* Add Anthropic usage information and an Anthropic usage widget.
+
+## Fixes
+
+* Refresh window state after Hyprland reconnects.
+* Fix backend detection and X11 strut sizing.
+* Handle non-X11 GDK windows safely.
+* Stabilize CSS loading for themed end widgets.
 
 ## Refactors
 
