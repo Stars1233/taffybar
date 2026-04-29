@@ -368,16 +368,36 @@ formatRateLimitMenuLines displayMode limit =
     [ formatWindowMenuLine displayMode "5h" <$> openAIUsagePrimaryWindow limit,
       formatWindowMenuLine displayMode "7d" <$> openAIUsageSecondaryWindow limit
     ]
+    <> concat
+      ( catMaybes
+          [ formatWindowTokenMenuLines "5h" <$> openAIUsagePrimaryWindow limit,
+            formatWindowTokenMenuLines "7d" <$> openAIUsageSecondaryWindow limit
+          ]
+      )
     <> [formatRateLimitStatus limit]
 
 formatWindowMenuLine :: OpenAIUsageDisplayMode -> T.Text -> OpenAIUsageWindow -> T.Text
 formatWindowMenuLine displayMode fallbackName window =
   formatWindowName fallbackName window
     <> ": "
-    <> formatWindowPercent displayMode window
+    <> formatWindowValue displayMode window
     <> " "
     <> displayModeText displayMode
+    <> formatWindowPercentSuffix displayMode window
     <> maybe "" ((", resets in " <>) . formatDuration) (openAIUsageResetAfterSeconds window)
+
+formatWindowTokenMenuLines :: T.Text -> OpenAIUsageWindow -> [T.Text]
+formatWindowTokenMenuLines fallbackName window =
+  case openAIUsageWindowTotals window of
+    Nothing -> []
+    Just totals ->
+      [ formatWindowName fallbackName window <> " tokens: " <> formatTotalTokens totals,
+        formatWindowName fallbackName window <> " requests: " <> T.pack (show $ openAIUsageRequestCount totals),
+        formatWindowName fallbackName window <> " input: " <> formatCount (openAIUsageInputTokens totals),
+        formatWindowName fallbackName window <> " cached input: " <> formatCount (openAIUsageCachedInputTokens totals),
+        formatWindowName fallbackName window <> " output: " <> formatCount (openAIUsageOutputTokens totals),
+        formatWindowName fallbackName window <> " reasoning output: " <> formatCount (openAIUsageReasoningOutputTokens totals)
+      ]
 
 formatRateLimitStatus :: OpenAIUsageRateLimit -> T.Text
 formatRateLimitStatus limit
@@ -419,9 +439,10 @@ formatWindow displayMode name (Just window) =
   Just $
     formatWindowName name window
       <> " "
-      <> formatWindowPercent displayMode window
+      <> formatWindowValue displayMode window
       <> " "
       <> displayModeText displayMode
+      <> formatWindowPercentSuffix displayMode window
       <> maybe "" ((" / " <>) . formatDuration) (openAIUsageWindowDurationSeconds window)
       <> maybe "" ((", resets in " <>) . formatDuration) (openAIUsageResetAfterSeconds window)
 
@@ -429,7 +450,7 @@ formatWindowLabel :: OpenAIUsageDisplayMode -> T.Text -> OpenAIUsageWindow -> T.
 formatWindowLabel displayMode fallbackName window =
   formatWindowName fallbackName window
     <> " "
-    <> formatWindowPercentWithIndicator displayMode window
+    <> formatWindowValueWithIndicator displayMode window
 
 formatWindowName :: T.Text -> OpenAIUsageWindow -> T.Text
 formatWindowName fallbackName window =
@@ -439,9 +460,17 @@ formatWindowPercent :: OpenAIUsageDisplayMode -> OpenAIUsageWindow -> T.Text
 formatWindowPercent displayMode window =
   T.pack $ printf "%d%%" $ displayPercent displayMode window
 
-formatWindowPercentWithIndicator :: OpenAIUsageDisplayMode -> OpenAIUsageWindow -> T.Text
-formatWindowPercentWithIndicator displayMode window =
-  formatWindowPercent displayMode window <> displayModeIndicator displayMode
+formatWindowValue :: OpenAIUsageDisplayMode -> OpenAIUsageWindow -> T.Text
+formatWindowValue = formatWindowPercent
+
+formatWindowValueWithIndicator :: OpenAIUsageDisplayMode -> OpenAIUsageWindow -> T.Text
+formatWindowValueWithIndicator displayMode window =
+  formatWindowValue displayMode window <> displayModeIndicator displayMode
+
+formatWindowPercentSuffix :: OpenAIUsageDisplayMode -> OpenAIUsageWindow -> T.Text
+formatWindowPercentSuffix OpenAIUsageDisplayUsed window
+  | isJust (openAIUsageWindowTotals window) = " (tokens in menu)"
+formatWindowPercentSuffix _ _ = ""
 
 displayPercent :: OpenAIUsageDisplayMode -> OpenAIUsageWindow -> Int
 displayPercent OpenAIUsageDisplayUsed = openAIUsageUsedPercent
@@ -463,6 +492,16 @@ formatCredits credits =
            else fromMaybeText "0" (openAIUsageCreditsBalance credits)
        )
     <> if openAIUsageHasCredits credits then " available" else ""
+
+formatTotalTokens :: OpenAIUsageTotals -> T.Text
+formatTotalTokens = formatCount . openAIUsageTotalTokens
+
+formatCount :: Int -> T.Text
+formatCount count
+  | count >= 1_000_000 = T.pack $ printf "%.1fM" (fromIntegral count / 1_000_000 :: Double)
+  | count >= 10_000 = T.pack $ printf "%dk" (count `div` 1_000)
+  | count >= 1_000 = T.pack $ printf "%.1fk" (fromIntegral count / 1_000 :: Double)
+  | otherwise = T.pack $ show count
 
 selectedWindow :: OpenAIUsageWindowSelector -> OpenAIUsageRateLimit -> Maybe OpenAIUsageWindow
 selectedWindow OpenAIUsagePrimaryWindow = openAIUsagePrimaryWindow
