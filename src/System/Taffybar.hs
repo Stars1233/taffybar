@@ -130,13 +130,16 @@ where
 
 import qualified Config.Dyre as Dyre
 import qualified Config.Dyre.Params as Dyre
+import Control.Concurrent (threadDelay)
 import qualified Control.Concurrent.MVar as MV
 import Control.Exception (finally)
+import Control.Exception.Enclosed (catchAny)
 import Control.Monad
 import Data.Char (toLower)
 import Data.Function (on)
 import qualified Data.GI.Gtk.Threading as GIThreading
 import Data.List (groupBy, isPrefixOf, sort)
+import Data.Maybe (isJust)
 import qualified Data.Text as T
 import Data.Word (Word32)
 import qualified GI.GLib as G
@@ -152,6 +155,7 @@ import System.FSNotify (Event (..), EventIsDirectory (..), startManager, stopMan
 import System.FilePath (normalise, splitSearchPath, takeDirectory, takeFileName, (</>))
 import qualified System.IO as IO
 import System.Log.Logger
+import System.Posix.Files (getFileStatus, isSocket)
 import System.Taffybar.Context
 import System.Taffybar.Context.Backend (prepareBackendEnvironment)
 import System.Taffybar.Hooks
@@ -343,7 +347,7 @@ startTaffybar config = do
 
   -- Fix up stale session-manager environment before GTK/GDK choose a display,
   -- then use GDK's actual opened display as the source of truth.
-  prepareBackendEnvironment
+  waitForBackendEnvironment
   void initThreads
 
   _ <- Gtk.init Nothing
@@ -361,6 +365,53 @@ startTaffybar config = do
         exitTaffybar context
 
   logTaffy DEBUG "Exited normally"
+
+waitForBackendEnvironment :: IO ()
+waitForBackendEnvironment = do
+  prepareBackendEnvironment
+  shouldWait <- shouldWaitForWaylandDisplay
+  when shouldWait $ do
+    logTaffy NOTICE "Waiting for Wayland display before starting GTK"
+    go (120 :: Int)
+  where
+    retryDelayMicros = 500000
+
+    go 0 = do
+      prepareBackendEnvironment
+      stillWaiting <- shouldWaitForWaylandDisplay
+      when stillWaiting $
+        logTaffy WARNING "Starting GTK even though no Wayland display socket is available"
+    go n = do
+      threadDelay retryDelayMicros
+      prepareBackendEnvironment
+      shouldWait <- shouldWaitForWaylandDisplay
+      when shouldWait $ go (n - 1)
+
+shouldWaitForWaylandDisplay :: IO Bool
+shouldWaitForWaylandDisplay = do
+  mRuntime <- lookupEnv "XDG_RUNTIME_DIR"
+  mDisplay <- lookupEnv "DISPLAY"
+  mSessionType <- lookupEnv "XDG_SESSION_TYPE"
+  mWaylandDisplay <- lookupEnv "WAYLAND_DISPLAY"
+  let explicitX11Session =
+        mSessionType == Just "x11" && maybe False (not . null) mDisplay
+      expectsWayland =
+        not explicitX11Session
+          && (mSessionType == Just "wayland" || isJust mWaylandDisplay)
+  if not expectsWayland
+    then pure False
+    else do
+      waylandOk <- maybe (pure False) isWaylandDisplaySocket $ do
+        runtime <- mRuntime
+        waylandDisplay <- mWaylandDisplay
+        pure (runtime </> waylandDisplay)
+      pure $ not waylandOk
+
+isWaylandDisplaySocket :: FilePath -> IO Bool
+isWaylandDisplaySocket path =
+  catchAny
+    (isSocket <$> getFileStatus path)
+    (const $ pure False)
 
 logTaffy :: Priority -> String -> IO ()
 logTaffy = logM "System.Taffybar"

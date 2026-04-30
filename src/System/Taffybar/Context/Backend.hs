@@ -37,6 +37,7 @@ import Data.Maybe (isJust)
 import qualified Data.Text as T
 import qualified GI.Gdk as Gdk
 import qualified GI.GdkX11.Objects.X11Display as GdkX11
+import qualified Network.Socket as NS
 import System.Directory (doesPathExist, listDirectory)
 import System.Environment (lookupEnv, setEnv, unsetEnv)
 import System.FilePath ((</>))
@@ -105,11 +106,35 @@ isSocketPath path =
 isLiveHyprlandSignature :: FilePath -> IO Bool
 isLiveHyprlandSignature dir =
   (||)
-    <$> isSocketPath (dir </> ".socket.sock")
-    <*> isSocketPath (dir </> ".socket2.sock")
+    <$> canConnectUnixSocket (dir </> ".socket.sock")
+    <*> canConnectUnixSocket (dir </> ".socket2.sock")
+
+canConnectUnixSocket :: FilePath -> IO Bool
+canConnectUnixSocket path = do
+  sock <- NS.socket NS.AF_UNIX NS.Stream NS.defaultProtocol
+  ( do
+      NS.connect sock (NS.SockAddrUnix path)
+      NS.close sock
+      pure True
+    )
+    `catchAny` \_ -> do
+      void $ NS.close sock `catchAny` \_ -> pure ()
+      pure False
 
 envIsNonEmpty :: Maybe String -> Bool
 envIsNonEmpty = maybe False (not . null)
+
+waylandSocketAvailable :: FilePath -> Maybe String -> IO Bool
+waylandSocketAvailable runtime mWaylandDisplay =
+  case mWaylandDisplay of
+    Just wl | not (null wl) -> isSocketPath (runtime </> wl)
+    _ -> pure False
+
+hyprlandSignatureAvailable :: FilePath -> Maybe String -> IO Bool
+hyprlandSignatureAvailable runtime mSignature =
+  case mSignature of
+    Just sig | not (null sig) -> isLiveHyprlandSignature (runtime </> "hypr" </> sig)
+    _ -> pure False
 
 -- | Detect the display-server backend, compensating for stale or missing
 -- environment variables.
@@ -147,31 +172,37 @@ prepareBackendEnvironment = do
     unsetEnv "HYPRLAND_INSTANCE_SIGNATURE"
     logIO DEBUG "X11 session detected; ignoring ambient Wayland sockets"
 
-  -- Discover and fix up WAYLAND_DISPLAY if it is missing or empty.
+  -- Discover and fix up WAYLAND_DISPLAY if it is missing, empty, or stale.
   void $ do
     case (mRuntime, rawWaylandDisplay) of
       _ | explicitX11Session -> pure Nothing
-      (Just runtime, val) | maybe True null val -> do
-        mSock <- discoverWaylandSocket runtime
-        case mSock of
-          Just sock -> do
-            logIO INFO $ "Discovered wayland socket: " ++ sock
-            setEnv "WAYLAND_DISPLAY" sock
-            pure (Just sock)
-          Nothing -> pure rawWaylandDisplay
+      (Just runtime, val) -> do
+        currentOk <- waylandSocketAvailable runtime val
+        if currentOk
+          then pure val
+          else do
+            mSock <- discoverWaylandSocket runtime
+            case mSock of
+              Just sock -> do
+                logIO INFO $ "Discovered wayland socket: " ++ sock
+                setEnv "WAYLAND_DISPLAY" sock
+                pure (Just sock)
+              Nothing -> pure rawWaylandDisplay
       _ -> pure rawWaylandDisplay
 
-  -- Discover and fix up HYPRLAND_INSTANCE_SIGNATURE if it is missing or empty.
+  -- Discover and fix up HYPRLAND_INSTANCE_SIGNATURE if it is missing, empty, or stale.
   unless explicitX11Session $ do
     raw <- lookupEnv "HYPRLAND_INSTANCE_SIGNATURE"
     case (mRuntime, raw) of
-      (Just runtime, val) | maybe True null val -> do
-        mSig <- discoverHyprlandSignature runtime
-        case mSig of
-          Just sig -> do
-            logIO INFO $ "Discovered Hyprland signature: " ++ sig
-            setEnv "HYPRLAND_INSTANCE_SIGNATURE" sig
-          Nothing -> pure ()
+      (Just runtime, val) -> do
+        currentOk <- hyprlandSignatureAvailable runtime val
+        unless currentOk $ do
+          mSig <- discoverHyprlandSignature runtime
+          case mSig of
+            Just sig -> do
+              logIO INFO $ "Discovered Hyprland signature: " ++ sig
+              setEnv "HYPRLAND_INSTANCE_SIGNATURE" sig
+            Nothing -> pure ()
       _ -> pure ()
 
 -- | Detect the backend from the display that GDK actually opened.

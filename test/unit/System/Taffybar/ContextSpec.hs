@@ -32,8 +32,10 @@ import GHC.Generics (Generic)
 import GI.Gtk (Widget)
 import Network.Socket qualified as Socket
 import System.Directory (createDirectoryIfMissing, getTemporaryDirectory, removePathForcibly)
+import System.Environment (lookupEnv)
 import System.FilePath ((</>))
 import System.Taffybar.Context
+import System.Taffybar.Context.Backend (prepareBackendEnvironment)
 import System.Taffybar.SimpleConfig
 import System.Taffybar.Test.DBusSpec (withTestDBus)
 import System.Taffybar.Test.UtilSpec (logSetup, withEnv, withSetEnv)
@@ -97,6 +99,42 @@ spec = logSetup $ sequential $ aroundAll_ withTestDBus $ aroundAll_ (withXdummy 
           detectBackend `shouldReturn` BackendX11
       removePathForcibly runtime `catch` (\(_ :: SomeException) -> pure ())
 
+  describe "prepareBackendEnvironment" $ do
+    it "replaces a stale WAYLAND_DISPLAY with a live discovered socket" $ do
+      tmp <- getTemporaryDirectory
+      let runtime = tmp </> "taffybar-test-runtime-repair-wayland"
+          liveWayland = "wayland-live"
+      removePathForcibly runtime `catch` (\(_ :: SomeException) -> pure ())
+      createDirectoryIfMissing True runtime
+      withUnixSocket (runtime </> liveWayland)
+        $ withSetEnv
+          [ ("XDG_RUNTIME_DIR", runtime),
+            ("WAYLAND_DISPLAY", "wayland-stale"),
+            ("XDG_SESSION_TYPE", "wayland")
+          ]
+        $ do
+          prepareBackendEnvironment
+          lookupEnv "WAYLAND_DISPLAY" `shouldReturn` Just liveWayland
+      removePathForcibly runtime `catch` (\(_ :: SomeException) -> pure ())
+
+    it "replaces a stale HYPRLAND_INSTANCE_SIGNATURE with a live discovered signature" $ do
+      tmp <- getTemporaryDirectory
+      let runtime = tmp </> "taffybar-test-runtime-repair-hyprland"
+          liveSig = "hyprland-live"
+          liveDir = runtime </> "hypr" </> liveSig
+      removePathForcibly runtime `catch` (\(_ :: SomeException) -> pure ())
+      createDirectoryIfMissing True liveDir
+      withUnixSocket (liveDir </> ".socket.sock")
+        $ withSetEnv
+          [ ("XDG_RUNTIME_DIR", runtime),
+            ("XDG_SESSION_TYPE", "wayland"),
+            ("HYPRLAND_INSTANCE_SIGNATURE", "hyprland-stale")
+          ]
+        $ do
+          prepareBackendEnvironment
+          lookupEnv "HYPRLAND_INSTANCE_SIGNATURE" `shouldReturn` Just liveSig
+      removePathForcibly runtime `catch` (\(_ :: SomeException) -> pure ())
+
   describe "Fuzz tests" $ do
     prop "eval generators" prop_genSimpleConfig
     xprop "TaffybarConfig" prop_taffybarConfig
@@ -110,6 +148,7 @@ withUnixSocket path action =
     Socket.close
     $ \sock -> do
       Socket.bind sock (Socket.SockAddrUnix path)
+      Socket.listen sock 1
       action
 
 ------------------------------------------------------------------------

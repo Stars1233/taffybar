@@ -87,6 +87,7 @@ import Control.Monad.Trans.Maybe
 import Control.Monad.Trans.Reader
 import qualified DBus as D
 import qualified DBus.Client as DBus
+import Data.Char (toLower)
 import Data.Data
 import Data.Default (Default (..))
 import Data.GI.Base (castTo)
@@ -106,8 +107,17 @@ import qualified GI.Gtk as Gtk
 import qualified GI.GtkLayerShell as GtkLayerShell
 import Graphics.UI.GIGtkStrut
 import StatusNotifier.TransparentWindow
+import System.Environment (getArgs, getExecutablePath, lookupEnv)
+import System.Exit (ExitCode (ExitFailure, ExitSuccess))
 import System.Log.Logger (Priority (..), logM)
-import System.Taffybar.Context.Backend (Backend (..), detectBackend)
+import System.Posix.Process (exitImmediately)
+import System.Process
+  ( CreateProcess (close_fds, new_session, std_err, std_in, std_out),
+    StdStream (NoStream),
+    createProcess,
+    proc,
+  )
+import System.Taffybar.Context.Backend (Backend (..), detectBackend, prepareBackendEnvironment)
 import qualified System.Taffybar.DBus.Client.Params as DBusParams
 import System.Taffybar.Information.EWMHDesktopInfo
   ( ewmhActiveWindow,
@@ -416,13 +426,18 @@ registerResumeRefresh ctx = do
           ++ show e
     Right _ -> pure ()
 
--- | Recreate Wayland bar windows when the Hyprland event socket reconnects.
+-- | Recover Wayland bars when the Hyprland event socket reconnects.
 --
 -- Hyprland restarts can leave existing layer-shell surfaces invisible even
 -- though the taffybar process and widget state loops are still alive. The
 -- Hyprland event reader emits @taffybar-hyprland-connected@ after every event
--- socket connection, so use reconnects as the compositor-lifecycle signal and
--- force a top-level window refresh.
+-- socket connection, so use reconnects as the compositor-lifecycle signal.
+--
+-- By default this re-execs taffybar. A full compositor restart can invalidate
+-- GTK's Wayland display connection itself, so merely recreating Gtk.Window
+-- values in the same process is not reliable. Set
+-- @TAFFYBAR_HYPRLAND_RECONNECT_ACTION=refresh@ to keep the older window-only
+-- refresh behavior while debugging.
 registerHyprlandReconnectRefresh :: Context -> IO ()
 registerHyprlandReconnectRefresh ctx = do
   eventChan <- withHyprlandEventChan ctx
@@ -436,28 +451,108 @@ registerHyprlandReconnectRefresh ctx = do
     threadDelay 2_000_000
     void $ MV.swapMVar readyVar True
 
-  let isConnectedEvent line =
-        T.takeWhile (/= '>') line == "taffybar-hyprland-connected"
+  let lifecycleEventName line =
+        let hyprlandEventName = T.takeWhile (/= '>') line
+         in if hyprlandEventName
+              `elem` [ "taffybar-hyprland-connected",
+                       "configreloaded"
+                     ]
+              then Just hyprlandEventName
+              else Nothing
 
-      scheduleRefresh = do
+      scheduleProcessRecovery reason = do
         wasPending <- MV.swapMVar pendingVar True
         unless wasPending $ void $ forkIO $ do
           -- Give Hyprland/GDK a short settling window before rebuilding
           -- layer-shell surfaces.
           threadDelay 1_000_000
           _ <- MV.swapMVar pendingVar False
-          logIO NOTICE "Hyprland event socket reconnected - forcing taffybar window refresh"
-          postGUIASync $ runReaderT forceRefreshTaffyWindows ctx
+          action <- hyprlandReconnectAction
+          case action of
+            "refresh" -> do
+              logIO NOTICE $ "Hyprland " ++ reason ++ " - forcing taffybar window refresh"
+              postGUIASync $ runReaderT forceRefreshTaffyWindows ctx
+            _ -> restartTaffybarProcess ctx reason
 
-      handleConnectedEvent = do
+      handleLifecycleEvent hyprlandEventName = do
         ready <- MV.readMVar readyVar
         if ready
-          then scheduleRefresh
+          then
+            if hyprlandEventName == "configreloaded"
+              then scheduleProcessRecovery "config reloaded"
+              else scheduleProcessRecovery "event socket reconnected"
           else logIO DEBUG "Ignoring Hyprland event socket connection during startup"
 
   void $ forkIO $ forever $ do
     line <- atomically $ readTChan events
-    when (isConnectedEvent line) handleConnectedEvent
+    maybe (pure ()) handleLifecycleEvent (lifecycleEventName line)
+
+hyprlandReconnectAction :: IO String
+hyprlandReconnectAction = do
+  mAction <- lookupEnv "TAFFYBAR_HYPRLAND_RECONNECT_ACTION"
+  pure $ maybe "restart" (map toLower) mAction
+
+restartTaffybarProcess :: Context -> String -> IO ()
+restartTaffybarProcess ctx reason = do
+  prepareBackendEnvironment
+  executable <- getExecutablePath
+  args <- getArgs
+  logIO NOTICE $
+    "Hyprland "
+      ++ reason
+      ++ " - re-executing taffybar process: "
+      ++ executable
+  underSystemd <- isSystemdService
+  if underSystemd
+    then exitImmediately (ExitFailure 75)
+    else do
+      disconnectClient "session" (sessionDBusClient ctx)
+      disconnectClient "system" (systemDBusClient ctx)
+      result <- try $ spawnDetachedRestart executable args
+      case result of
+        Left (e :: SomeException) ->
+          logIO WARNING $
+            "Failed to restart taffybar process: "
+              ++ show e
+        Right _ ->
+          exitImmediately ExitSuccess
+  where
+    isSystemdService = maybe False (not . null) <$> lookupEnv "INVOCATION_ID"
+
+    spawnDetachedRestart executable args =
+      createProcess
+        (proc "sh" (["-c", "sleep 1; exec \"$@\"", "taffybar-restart", executable] ++ args))
+          { close_fds = True,
+            new_session = True,
+            std_in = NoStream,
+            std_out = NoStream,
+            std_err = NoStream
+          }
+
+    disconnectClient name client =
+      DBus.disconnect client
+        `catchAny` \e ->
+          logIO WARNING $
+            "Failed to disconnect "
+              ++ name
+              ++ " DBus client before restart: "
+              ++ show e
+
+taffybarWaylandLayer :: IO GtkLayerShell.Layer
+taffybarWaylandLayer = do
+  mLayer <- lookupEnv "TAFFYBAR_WAYLAND_LAYER"
+  case fmap (map toLower) mLayer of
+    Just "background" -> pure GtkLayerShell.LayerBackground
+    Just "bottom" -> pure GtkLayerShell.LayerBottom
+    Just "overlay" -> pure GtkLayerShell.LayerOverlay
+    Just "top" -> pure GtkLayerShell.LayerTop
+    Just invalid -> do
+      logIO WARNING $
+        "Invalid TAFFYBAR_WAYLAND_LAYER="
+          ++ invalid
+          ++ "; using top"
+      pure GtkLayerShell.LayerTop
+    Nothing -> pure GtkLayerShell.LayerTop
 
 -- | Build an empty taffybar context. This function is mostly useful for
 -- invoking functions that yield 'TaffyIO' values in a testing setting (e.g. in
@@ -1001,7 +1096,8 @@ setupLayerShellWindow
               GtkLayerShell.setMargin window GtkLayerShell.EdgeTop ypadding
               GtkLayerShell.setMargin window GtkLayerShell.EdgeBottom ypadding
 
-              GtkLayerShell.setLayer window GtkLayerShell.LayerTop
+              layer <- taffybarWaylandLayer
+              GtkLayerShell.setLayer window layer
 
               let setAnchor = GtkLayerShell.setAnchor window
 
