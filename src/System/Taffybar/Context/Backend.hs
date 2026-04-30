@@ -31,8 +31,9 @@ where
 
 import Control.Exception.Enclosed (catchAny)
 import Control.Monad
+import Data.Char (toLower)
 import Data.GI.Base (castTo)
-import Data.List (isPrefixOf, isSuffixOf)
+import Data.List (isInfixOf, isPrefixOf, isSuffixOf)
 import Data.Maybe (isJust)
 import qualified Data.Text as T
 import qualified GI.Gdk as Gdk
@@ -124,6 +125,16 @@ canConnectUnixSocket path = do
 envIsNonEmpty :: Maybe String -> Bool
 envIsNonEmpty = maybe False (not . null)
 
+envIsX11GdkBackend :: Maybe String -> Bool
+envIsX11GdkBackend = maybe False ((== "x11") . map toLower)
+
+envContainsWaylandDesktop :: Maybe String -> Bool
+envContainsWaylandDesktop =
+  maybe False $
+    \value ->
+      let lowered = map toLower value
+       in "hyprland" `isInfixOf` lowered
+
 waylandSocketAvailable :: FilePath -> Maybe String -> IO Bool
 waylandSocketAvailable runtime mWaylandDisplay =
   case mWaylandDisplay of
@@ -151,47 +162,70 @@ hyprlandSignatureAvailable runtime mSignature =
 --   from an X11 session).
 --
 -- This function probes @XDG_RUNTIME_DIR@ only when the current process
--- environment does not already identify an active X11 session, then fixes up
--- the process environment so GDK sees consistent display variables.
+-- context already points at Wayland, or when there is no explicit X display to
+-- compete with. This avoids choosing a Wayland compositor merely because one
+-- exists somewhere in the user's runtime directory.
 prepareBackendEnvironment :: IO ()
 prepareBackendEnvironment = do
   mRuntime <- lookupEnv "XDG_RUNTIME_DIR"
   mDisplay <- lookupEnv "DISPLAY"
   mSessionType <- lookupEnv "XDG_SESSION_TYPE"
+  mGdkBackend <- lookupEnv "GDK_BACKEND"
+  mCurrentDesktop <- lookupEnv "XDG_CURRENT_DESKTOP"
+  mDesktopSession <- lookupEnv "DESKTOP_SESSION"
+  rawHyprlandSignature <- lookupEnv "HYPRLAND_INSTANCE_SIGNATURE"
   rawWaylandDisplay <- lookupEnv "WAYLAND_DISPLAY"
 
   let hasDisplay = envIsNonEmpty mDisplay
-      explicitX11Session = mSessionType == Just "x11" && hasDisplay
+
+  currentWaylandOk <- case mRuntime of
+    Just runtime -> waylandSocketAvailable runtime rawWaylandDisplay
+    Nothing -> pure False
+
+  let explicitX11Session =
+        envIsX11GdkBackend mGdkBackend
+          || (mSessionType == Just "x11" && hasDisplay && not currentWaylandOk)
+      processContextExpectsWayland =
+        currentWaylandOk
+          || mSessionType == Just "wayland"
+          || envIsNonEmpty rawHyprlandSignature
+          || envContainsWaylandDesktop mCurrentDesktop
+          || envContainsWaylandDesktop mDesktopSession
+      shouldDiscoverAmbientWayland =
+        not explicitX11Session && (processContextExpectsWayland || not hasDisplay)
 
   -- If the process environment identifies the active session as X11, trust it
-  -- over ambient Wayland sockets in XDG_RUNTIME_DIR. Those sockets can outlive
-  -- or coexist with a different login session and are not sufficient evidence
-  -- that this process should initialize GTK as Wayland.
+  -- over ambient Wayland sockets in XDG_RUNTIME_DIR. A live WAYLAND_DISPLAY
+  -- from the process environment is stronger evidence than XDG_SESSION_TYPE,
+  -- because user shells can retain a stale session type.
   when explicitX11Session $ do
     unsetEnv "WAYLAND_DISPLAY"
     unsetEnv "HYPRLAND_INSTANCE_SIGNATURE"
+    setEnv "GDK_BACKEND" "x11"
     logIO DEBUG "X11 session detected; ignoring ambient Wayland sockets"
 
   -- Discover and fix up WAYLAND_DISPLAY if it is missing, empty, or stale.
-  void $ do
+  repairedWaylandDisplay <- do
     case (mRuntime, rawWaylandDisplay) of
       _ | explicitX11Session -> pure Nothing
-      (Just runtime, val) -> do
-        currentOk <- waylandSocketAvailable runtime val
-        if currentOk
-          then pure val
-          else do
-            mSock <- discoverWaylandSocket runtime
-            case mSock of
-              Just sock -> do
-                logIO INFO $ "Discovered wayland socket: " ++ sock
-                setEnv "WAYLAND_DISPLAY" sock
-                pure (Just sock)
-              Nothing -> pure rawWaylandDisplay
-      _ -> pure rawWaylandDisplay
+      (Just _, val) | currentWaylandOk -> pure val
+      (Just runtime, _) | shouldDiscoverAmbientWayland -> do
+        mSock <- discoverWaylandSocket runtime
+        case mSock of
+          Just sock -> do
+            logIO INFO $ "Discovered wayland socket: " ++ sock
+            setEnv "WAYLAND_DISPLAY" sock
+            pure (Just sock)
+          Nothing -> pure Nothing
+      _ -> pure Nothing
+
+  when (not explicitX11Session && envIsNonEmpty repairedWaylandDisplay) $ do
+    setEnv "GDK_BACKEND" "wayland"
+    when (mSessionType /= Just "wayland") $
+      setEnv "XDG_SESSION_TYPE" "wayland"
 
   -- Discover and fix up HYPRLAND_INSTANCE_SIGNATURE if it is missing, empty, or stale.
-  unless explicitX11Session $ do
+  when (processContextExpectsWayland || envIsNonEmpty repairedWaylandDisplay) $ do
     raw <- lookupEnv "HYPRLAND_INSTANCE_SIGNATURE"
     case (mRuntime, raw) of
       (Just runtime, val) -> do
