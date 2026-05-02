@@ -79,7 +79,9 @@ pkgs.testers.nixosTest (
 
           decoration {
             rounding = 0
-            blur { enabled = false }
+            blur {
+              enabled = false
+            }
           }
 
           general {
@@ -115,25 +117,26 @@ pkgs.testers.nixosTest (
           return machine.execute(f"su - {user} -c {q(cmd)}")
 
 
+      hyprland_env_cmd = """
+      wayland="$(find /run/user/${toString uid} -maxdepth 1 -type s -name 'wayland-[0-9]*' -printf '%T@ %f\\n' | sort -n | tail -n1 | cut -d' ' -f2-)"
+      sig="$(find /run/user/${toString uid}/hypr -mindepth 1 -maxdepth 1 -type d -exec test -S '{}/.socket.sock' \\; -printf '%T@ %f\\n' | sort -n | tail -n1 | cut -d' ' -f2-)"
+      test -n "$wayland"
+      test -n "$sig"
+      test -S "/run/user/${toString uid}/$wayland"
+      test -S "/run/user/${toString uid}/hypr/$sig/.socket.sock"
+      printf '%s\\n%s\\n' "$wayland" "$sig"
+      """
+
+
       start_all()
       machine.wait_for_unit("multi-user.target")
 
-      # Wait for Hyprland session startup.
-      machine.wait_until_succeeds("pgrep -u ${user} Hyprland")
+      # Wait for a usable Hyprland session. Hyprland can abort once during VM
+      # startup, so derive the compositor environment from the newest live
+      # process instead of pinning the first runtime directory we see.
       machine.wait_until_succeeds("test -d /run/user/${toString uid}")
-      machine.wait_until_succeeds(
-          "ls /run/user/${toString uid} | grep -E '^wayland-[0-9]+$' | head -n1"
-      )
-
-      wayland = machine.succeed(
-          "ls -1 /run/user/${toString uid} | grep -E '^wayland-[0-9]+$' | head -n1"
-      ).strip()
-
-      machine.wait_until_succeeds(
-          "test -d /run/user/${toString uid}/hypr && ls -1 /run/user/${toString uid}/hypr | head -n1"
-      )
-      sig = machine.succeed("ls -1 /run/user/${toString uid}/hypr | head -n1").strip()
-      machine.wait_until_succeeds(f"test -S /run/user/${toString uid}/hypr/{sig}/.socket.sock")
+      machine.wait_until_succeeds(hyprland_env_cmd)
+      wayland, sig = machine.succeed(hyprland_env_cmd).strip().splitlines()
 
       env = " ".join(
           [

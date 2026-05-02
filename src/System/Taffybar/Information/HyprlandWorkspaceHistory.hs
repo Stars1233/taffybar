@@ -36,7 +36,7 @@ import System.Directory (doesFileExist)
 import System.Environment (lookupEnv)
 import System.FilePath ((</>))
 
-data HyprlandWorkspaceHistoryMonitor = HyprlandWorkspaceHistoryMonitor
+newtype HyprlandWorkspaceHistoryMonitor = HyprlandWorkspaceHistoryMonitor
   { hwhMonitorHistory :: [Int]
   }
   deriving (Eq, Show)
