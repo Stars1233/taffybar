@@ -251,6 +251,7 @@ wrapOpenAIUsageMenu klass child config parts = do
     Gtk.onWidgetButtonPressEvent ebox $ \_event -> do
       currentEvent <- Gtk.getCurrentEvent
       readyMenu <- readTVarIO menuVar
+      Gtk.widgetShowAll readyMenu
       Gtk.menuPopupAtPointer readyMenu currentEvent
       void $ forkIO (openAIUsageLabelRefreshNow parts)
       return True
@@ -277,7 +278,6 @@ buildUsageMenu anchor config label displayState snapshotVar refreshNow snapshot 
     snapshotVar
     refreshNow
     snapshot
-  Gtk.widgetShowAll menu
   return menu
 
 getOpenAIUsageDisplayModeState :: OpenAIUsageDisplayMode -> TaffyIO OpenAIUsageDisplayModeState
