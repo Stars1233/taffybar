@@ -315,8 +315,25 @@ autoFillImage drawArea getPixbuf orientation = liftIO $ do
     case afScaledPixbuf st of
       Nothing -> pure True
       Just pb -> do
-        Gdk.cairoSetSourcePixbuf ctx pb (afOffsetX st) (afOffsetY st)
-        renderWithContext C.paint ctx
+        let scaleFactor = fromIntegral (max 1 $ afScaleFactor st)
+            -- GTK3 reports an integer widget scale on fractional Wayland
+            -- outputs. The pixbuf is sized in device pixels above, so draw it
+            -- through the inverse transform to keep the logical widget size.
+            sourceX = afOffsetX st * scaleFactor
+            sourceY = afOffsetY st * scaleFactor
+        renderWithContext
+          ( do
+              C.save
+              C.scale (1 / scaleFactor) (1 / scaleFactor)
+          )
+          ctx
+        Gdk.cairoSetSourcePixbuf ctx pb sourceX sourceY
+        renderWithContext
+          ( do
+              C.paint
+              C.restore
+          )
+          ctx
         pure True
 
   pure $ recompute True
