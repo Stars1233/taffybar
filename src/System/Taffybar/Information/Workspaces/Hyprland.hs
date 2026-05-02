@@ -51,7 +51,6 @@ import System.Taffybar.Hyprland (getHyprlandClient, getHyprlandEventChan)
 import qualified System.Taffybar.Information.Hyprland as Hypr
 import qualified System.Taffybar.Information.Hyprland.API as HyprAPI
 import qualified System.Taffybar.Information.Hyprland.Types as HyprTypes
-import qualified System.Taffybar.Information.HyprlandWorkspaceHistory as HyprHistory
 import System.Taffybar.Information.Workspaces.Model
 
 data HyprlandWorkspaceProviderConfig = HyprlandWorkspaceProviderConfig
@@ -256,10 +255,8 @@ buildHyprlandWorkspaceSnapshot = do
       let address = HyprTypes.hyprActiveWindowAddress win
        in return $ if T.null address then Nothing else Just address
 
-  workspaceHistoryOrder <- readWorkspaceHistoryOrder
-
   let windowsByWorkspace = collectWorkspaceWindows activeWindowAddress clients
-      sortedWorkspaces = sortWorkspacesWithHistory workspaceHistoryOrder workspaces
+      sortedWorkspaces = sortOn HyprTypes.hyprWorkspaceId workspaces
       visibleWorkspaceIds =
         [ HyprTypes.hyprWorkspaceRefId wsRef
         | monitor <- monitors,
@@ -298,27 +295,6 @@ buildHyprlandWorkspaceSnapshot = do
                 workspaceWindows = wsWindows
               }
   return (clientsOk, map toWorkspace sortedWorkspaces)
-
-readWorkspaceHistoryOrder :: TaffyIO (Maybe [Int])
-readWorkspaceHistoryOrder = do
-  snapshotResult <- liftIO HyprHistory.readHyprlandWorkspaceHistorySnapshot
-  case snapshotResult of
-    Left err -> wLog WARNING ("hypr-workspace-history snapshot read failed: " <> err) >> return Nothing
-    Right Nothing -> return Nothing
-    Right (Just snapshot) -> return $ HyprHistory.workspaceHistoryOrderForActiveMonitor snapshot
-
-sortWorkspacesWithHistory ::
-  Maybe [Int] ->
-  [HyprTypes.HyprlandWorkspaceInfo] ->
-  [HyprTypes.HyprlandWorkspaceInfo]
-sortWorkspacesWithHistory Nothing =
-  sortOn HyprTypes.hyprWorkspaceId
-sortWorkspacesWithHistory (Just history) =
-  sortOn $ \ws ->
-    let workspaceId = HyprTypes.hyprWorkspaceId ws
-     in (M.findWithDefault maxBound workspaceId ranks, workspaceId)
-  where
-    ranks = M.fromList $ zip history [0 :: Int ..]
 
 isSpecialWorkspace :: Int -> T.Text -> Bool
 isSpecialWorkspace wsId wsName =
