@@ -161,6 +161,34 @@ spec = logSetup $ sequential $ aroundAll_ withTestDBus $ aroundAll_ (withXdummy 
           lookupEnv "XDG_SESSION_TYPE" `shouldReturn` Just "wayland"
       removePathForcibly runtime `catch` (\(_ :: SomeException) -> pure ())
 
+    it "prefers a live Hyprland instance over stale X11 session variables" $ do
+      tmp <- getTemporaryDirectory
+      let runtime = tmp </> "taffybar-test-runtime-hyprland-over-x11"
+          liveWayland = "wayland-live"
+          liveSig = "hyprland-live"
+          liveDir = runtime </> "hypr" </> liveSig
+      removePathForcibly runtime `catch` (\(_ :: SomeException) -> pure ())
+      createDirectoryIfMissing True liveDir
+      withUnixSocket (runtime </> liveWayland)
+        $ withUnixSocket (liveDir </> ".socket.sock")
+        $ withEnv
+          [ ("XDG_RUNTIME_DIR", const $ Just runtime),
+            ("DISPLAY", const $ Just ":0"),
+            ("WAYLAND_DISPLAY", const Nothing),
+            ("HYPRLAND_INSTANCE_SIGNATURE", const $ Just liveSig),
+            ("XDG_SESSION_TYPE", const $ Just "x11"),
+            ("XDG_CURRENT_DESKTOP", const $ Just "none+xmonad"),
+            ("DESKTOP_SESSION", const $ Just "none+xmonad"),
+            ("GDK_BACKEND", const Nothing)
+          ]
+        $ do
+          prepareBackendEnvironment
+          lookupEnv "WAYLAND_DISPLAY" `shouldReturn` Just liveWayland
+          lookupEnv "HYPRLAND_INSTANCE_SIGNATURE" `shouldReturn` Just liveSig
+          lookupEnv "GDK_BACKEND" `shouldReturn` Just "wayland"
+          lookupEnv "XDG_SESSION_TYPE" `shouldReturn` Just "wayland"
+      removePathForcibly runtime `catch` (\(_ :: SomeException) -> pure ())
+
     it "replaces a stale HYPRLAND_INSTANCE_SIGNATURE with a live discovered signature" $ do
       tmp <- getTemporaryDirectory
       let runtime = tmp </> "taffybar-test-runtime-repair-hyprland"

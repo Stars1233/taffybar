@@ -181,12 +181,24 @@ prepareBackendEnvironment = do
   currentWaylandOk <- case mRuntime of
     Just runtime -> waylandSocketAvailable runtime rawWaylandDisplay
     Nothing -> pure False
+  currentHyprlandOk <- case mRuntime of
+    Just runtime -> hyprlandSignatureAvailable runtime rawHyprlandSignature
+    Nothing -> pure False
 
-  let explicitX11Session =
+  let explicitlyRequestedX11 =
         envIsX11GdkBackend mGdkBackend
-          || (mSessionType == Just "x11" && hasDisplay && not currentWaylandOk)
+      staleSessionTypeClaimsX11 =
+        mSessionType == Just "x11"
+          && hasDisplay
+          && not currentWaylandOk
+          && not currentHyprlandOk
+          && not (envContainsWaylandDesktop mCurrentDesktop)
+          && not (envContainsWaylandDesktop mDesktopSession)
+      explicitX11Session =
+        explicitlyRequestedX11 || staleSessionTypeClaimsX11
       processContextExpectsWayland =
         currentWaylandOk
+          || currentHyprlandOk
           || mSessionType == Just "wayland"
           || envIsNonEmpty rawHyprlandSignature
           || envContainsWaylandDesktop mCurrentDesktop
