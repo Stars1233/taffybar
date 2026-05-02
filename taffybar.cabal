@@ -214,6 +214,7 @@ library
                  , System.Taffybar.Widget.MPRIS2
                  , System.Taffybar.Widget.NetworkGraph
                  , System.Taffybar.Widget.NetworkManager
+                 , System.Taffybar.Widget.OmniMenu
                  , System.Taffybar.Widget.OpenAIUsage
                  , System.Taffybar.Widget.PowerProfiles
                  , System.Taffybar.Widget.Privacy

@@ -70,6 +70,9 @@ module System.Taffybar.Widget
   -- * "System.Taffybar.Widget.NetworkManager"
   , module System.Taffybar.Widget.NetworkManager
 
+  -- * "System.Taffybar.Widget.OmniMenu"
+  , module System.Taffybar.Widget.OmniMenu
+
   -- * "System.Taffybar.Widget.PowerProfiles"
   , module System.Taffybar.Widget.PowerProfiles
 
@@ -128,6 +131,7 @@ import System.Taffybar.Widget.Layout
 import System.Taffybar.Widget.MPRIS2
 import System.Taffybar.Widget.NetworkGraph
 import System.Taffybar.Widget.NetworkManager
+import System.Taffybar.Widget.OmniMenu
 import System.Taffybar.Widget.PowerProfiles
 import System.Taffybar.Widget.SNITray
 import System.Taffybar.Widget.SNITray.PrioritizedCollapsible
