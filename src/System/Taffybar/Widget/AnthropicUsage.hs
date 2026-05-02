@@ -13,6 +13,7 @@ module System.Taffybar.Widget.AnthropicUsage
     anthropicUsageLabelNewWith,
     anthropicUsageFiveHourWindowLabelNew,
     anthropicUsageWeeklyWindowLabelNew,
+    anthropicUsageSectionNewWith,
     anthropicUsageStackNew,
     anthropicUsageStackNewWith,
     anthropicUsageNew,
@@ -37,7 +38,7 @@ import qualified GI.Gtk as Gtk
 import System.Taffybar.Context (TaffyIO, getStateDefault)
 import System.Taffybar.Information.AnthropicUsage
 import System.Taffybar.Util (postGUIASync)
-import System.Taffybar.Widget.Util (widgetSetClassGI)
+import System.Taffybar.Widget.Util (buildIconLabelBox, widgetSetClassGI)
 import Text.Printf (printf)
 
 data AnthropicUsageDisplayMode
@@ -48,6 +49,15 @@ data AnthropicUsageDisplayMode
 newtype AnthropicUsageDisplayModeState
   = AnthropicUsageDisplayModeState
       (MVar AnthropicUsageDisplayMode, TChan AnthropicUsageDisplayMode)
+
+data AnthropicUsageLabelParts = AnthropicUsageLabelParts
+  { anthropicUsageLabelWidget :: Gtk.Widget,
+    anthropicUsageLabel :: Gtk.Label,
+    anthropicUsageLabelDisplayState :: AnthropicUsageDisplayModeState,
+    anthropicUsageLabelSnapshotVar :: MVar AnthropicUsageSnapshot,
+    anthropicUsageLabelUsageChan :: TChan AnthropicUsageSnapshot,
+    anthropicUsageLabelRefreshNow :: IO ()
+  }
 
 data AnthropicUsageLabelConfig = AnthropicUsageLabelConfig
   { anthropicUsageLabelInfoConfig :: AnthropicUsageConfig,
@@ -114,15 +124,38 @@ anthropicUsageStackNew = anthropicUsageStackNewWith defaultAnthropicUsageStackCo
 
 anthropicUsageStackNewWith :: AnthropicUsageStackConfig -> TaffyIO Gtk.Widget
 anthropicUsageStackNewWith config = do
-  fiveHour <- anthropicUsageLabelNewWith $ windowLabelConfig AnthropicUsageFiveHourWindow config
-  weekly <- anthropicUsageLabelNewWith $ windowLabelConfig AnthropicUsageWeeklyWindow config
+  (stack, fiveHourParts) <- anthropicUsageStackPartsNewWith config
+  liftIO $
+    wrapAnthropicUsageMenu
+      "anthropic-usage"
+      stack
+      (windowLabelConfig AnthropicUsageFiveHourWindow config)
+      fiveHourParts
+
+anthropicUsageSectionNewWith :: Gtk.Widget -> AnthropicUsageStackConfig -> TaffyIO Gtk.Widget
+anthropicUsageSectionNewWith iconWidget config = do
+  (stack, fiveHourParts) <- anthropicUsageStackPartsNewWith config
+  liftIO $ do
+    section <- buildIconLabelBox iconWidget stack
+    _ <- widgetSetClassGI section "usage-section"
+    wrapAnthropicUsageMenu
+      "anthropic-usage"
+      section
+      (windowLabelConfig AnthropicUsageFiveHourWindow config)
+      fiveHourParts
+
+anthropicUsageStackPartsNewWith :: AnthropicUsageStackConfig -> TaffyIO (Gtk.Widget, AnthropicUsageLabelParts)
+anthropicUsageStackPartsNewWith config = do
+  fiveHourParts <- anthropicUsageLabelPartsNewWith $ windowLabelConfig AnthropicUsageFiveHourWindow config
+  weeklyParts <- anthropicUsageLabelPartsNewWith $ windowLabelConfig AnthropicUsageWeeklyWindow config
   liftIO $ do
     box <- Gtk.boxNew Gtk.OrientationVertical 0
     _ <- widgetSetClassGI box "anthropic-usage-stack"
-    Gtk.boxPackStart box fiveHour False False 0
-    Gtk.boxPackStart box weekly False False 0
+    Gtk.boxPackStart box (anthropicUsageLabelWidget fiveHourParts) False False 0
+    Gtk.boxPackStart box (anthropicUsageLabelWidget weeklyParts) False False 0
     Gtk.widgetShowAll box
-    Gtk.toWidget box
+    widget <- Gtk.toWidget box
+    return (widget, fiveHourParts)
 
 windowLabelConfig :: AnthropicUsageWindowSelector -> AnthropicUsageStackConfig -> AnthropicUsageLabelConfig
 windowLabelConfig selector stackConfig =
@@ -137,6 +170,11 @@ windowLabelConfig selector stackConfig =
 
 anthropicUsageLabelNewWith :: AnthropicUsageLabelConfig -> TaffyIO Gtk.Widget
 anthropicUsageLabelNewWith config = do
+  parts <- anthropicUsageLabelPartsNewWith config
+  liftIO $ wrapAnthropicUsageMenu "anthropic-usage" (anthropicUsageLabelWidget parts) config parts
+
+anthropicUsageLabelPartsNewWith :: AnthropicUsageLabelConfig -> TaffyIO AnthropicUsageLabelParts
+anthropicUsageLabelPartsNewWith config = do
   let infoConfig = anthropicUsageLabelInfoConfig config
   usageChan <- getAnthropicUsageChan infoConfig
   initialSnapshot <- getAnthropicUsageState infoConfig
@@ -145,29 +183,53 @@ anthropicUsageLabelNewWith config = do
 
   liftIO $ do
     label <- Gtk.labelNew (Just (anthropicUsageLabelFallbackText config))
-    ebox <- Gtk.eventBoxNew
     snapshotVar <- newMVar initialSnapshot
     let refreshNow = runReaderT (forceAnthropicUsageRefresh infoConfig) ctx
     _ <- widgetSetClassGI label (anthropicUsageLabelClass config)
-    _ <- widgetSetClassGI ebox "anthropic-usage"
-    Gtk.containerAdd ebox label
     updateLabelFromState config label displayState initialSnapshot
 
-    void $ Gtk.onWidgetRealize ebox $ do
+    void $ Gtk.onWidgetRealize label $ do
       usageThread <- forkUsageListener config label displayState snapshotVar usageChan
       modeThread <- forkDisplayModeListener config label displayState snapshotVar
-      void $ Gtk.onWidgetUnrealize ebox $ do
+      void $ Gtk.onWidgetUnrealize label $ do
         killThread usageThread
         killThread modeThread
 
-    void $
-      Gtk.onWidgetButtonPressEvent ebox $ \_event -> do
-        refreshNow
-        showUsageMenu ebox config label displayState snapshotVar refreshNow
-        return True
+    Gtk.widgetShowAll label
+    widget <- Gtk.toWidget label
+    return $
+      AnthropicUsageLabelParts
+        { anthropicUsageLabelWidget = widget,
+          anthropicUsageLabel = label,
+          anthropicUsageLabelDisplayState = displayState,
+          anthropicUsageLabelSnapshotVar = snapshotVar,
+          anthropicUsageLabelUsageChan = usageChan,
+          anthropicUsageLabelRefreshNow = refreshNow
+        }
 
-    Gtk.widgetShowAll ebox
-    Gtk.toWidget ebox
+wrapAnthropicUsageMenu ::
+  T.Text ->
+  Gtk.Widget ->
+  AnthropicUsageLabelConfig ->
+  AnthropicUsageLabelParts ->
+  IO Gtk.Widget
+wrapAnthropicUsageMenu klass child config parts = do
+  ebox <- Gtk.eventBoxNew
+  _ <- widgetSetClassGI ebox klass
+  Gtk.containerAdd ebox child
+  void $
+    Gtk.onWidgetButtonPressEvent ebox $ \_event -> do
+      showUsageMenu
+        ebox
+        config
+        (anthropicUsageLabel parts)
+        (anthropicUsageLabelDisplayState parts)
+        (anthropicUsageLabelSnapshotVar parts)
+        (anthropicUsageLabelUsageChan parts)
+        (anthropicUsageLabelRefreshNow parts)
+      return True
+  Gtk.widgetShowAll ebox
+  Gtk.toWidget ebox
 
 getAnthropicUsageDisplayModeState :: AnthropicUsageDisplayMode -> TaffyIO AnthropicUsageDisplayModeState
 getAnthropicUsageDisplayModeState defaultMode =
@@ -276,15 +338,50 @@ showUsageMenu ::
   Gtk.Label ->
   AnthropicUsageDisplayModeState ->
   MVar AnthropicUsageSnapshot ->
+  TChan AnthropicUsageSnapshot ->
   IO () ->
   IO ()
-showUsageMenu anchor config label displayState snapshotVar refreshNow = do
+showUsageMenu anchor config label displayState snapshotVar usageChan refreshNow = do
   currentEvent <- Gtk.getCurrentEvent
-  snapshot <- readMVar snapshotVar
-  displayMode <- readDisplayMode displayState
   menu <- Gtk.menuNew
   Gtk.menuAttachToWidget menu anchor Nothing
+  populateUsageMenu menu config label displayState snapshotVar refreshNow
 
+  ourUsageChan <- atomically $ dupTChan usageChan
+  menuThread <-
+    forkIO $
+      forever $ do
+        snapshot <- atomically $ readTChan ourUsageChan
+        void $ swapMVar snapshotVar snapshot
+        postGUIASync $ populateUsageMenu menu config label displayState snapshotVar refreshNow
+
+  void $
+    Gtk.onWidgetHide menu $
+      void $
+        GLib.idleAdd GLib.PRIORITY_LOW $ do
+          killThread menuThread
+          Gtk.widgetDestroy menu
+          return False
+
+  Gtk.widgetShowAll menu
+  Gtk.menuPopupAtPointer menu currentEvent
+  void $ forkIO refreshNow
+
+populateUsageMenu ::
+  Gtk.Menu ->
+  AnthropicUsageLabelConfig ->
+  Gtk.Label ->
+  AnthropicUsageDisplayModeState ->
+  MVar AnthropicUsageSnapshot ->
+  IO () ->
+  IO ()
+populateUsageMenu menu config label displayState snapshotVar refreshNow = do
+  children <- Gtk.containerGetChildren menu
+  forM_ children $ \item -> do
+    Gtk.containerRemove menu item
+    Gtk.widgetDestroy item
+  snapshot <- readMVar snapshotVar
+  displayMode <- readDisplayMode displayState
   appendInfoItem menu "Claude Code usage"
   appendSnapshotMenuItems menu displayMode snapshot
 
@@ -298,21 +395,14 @@ showUsageMenu anchor config label displayState snapshotVar refreshNow = do
     Gtk.onMenuItemActivate toggleItem $ do
       setDisplayMode displayState (toggleDisplayMode displayMode)
       readMVar snapshotVar >>= updateLabelFromState config label displayState
+      populateUsageMenu menu config label displayState snapshotVar refreshNow
   Gtk.menuShellAppend menu toggleItem
 
   refreshItem <- Gtk.menuItemNewWithLabel ("Refresh" :: T.Text)
-  void $ Gtk.onMenuItemActivate refreshItem refreshNow
+  void $ Gtk.onMenuItemActivate refreshItem $ void $ forkIO refreshNow
   Gtk.menuShellAppend menu refreshItem
 
-  void $
-    Gtk.onWidgetHide menu $
-      void $
-        GLib.idleAdd GLib.PRIORITY_LOW $ do
-          Gtk.widgetDestroy menu
-          return False
-
   Gtk.widgetShowAll menu
-  Gtk.menuPopupAtPointer menu currentEvent
 
 appendInfoItem :: Gtk.Menu -> T.Text -> IO ()
 appendInfoItem menu text = do

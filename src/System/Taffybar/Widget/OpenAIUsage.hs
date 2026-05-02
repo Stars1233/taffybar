@@ -13,6 +13,7 @@ module System.Taffybar.Widget.OpenAIUsage
     openAIUsageLabelNewWith,
     openAIUsagePrimaryWindowLabelNew,
     openAIUsageSecondaryWindowLabelNew,
+    openAIUsageSectionNewWith,
     openAIUsageStackNew,
     openAIUsageStackNewWith,
     openAIUsageNew,
@@ -24,7 +25,7 @@ where
 
 import Control.Concurrent (ThreadId, forkIO, killThread)
 import Control.Concurrent.MVar (MVar, newMVar, readMVar, swapMVar)
-import Control.Concurrent.STM (atomically)
+import Control.Concurrent.STM (atomically, newTVarIO, readTVarIO, writeTVar)
 import Control.Concurrent.STM.TChan (TChan, dupTChan, newBroadcastTChanIO, readTChan, writeTChan)
 import Control.Monad (forM_, forever, void)
 import Control.Monad.IO.Class (liftIO)
@@ -36,7 +37,7 @@ import qualified GI.Gtk as Gtk
 import System.Taffybar.Context (TaffyIO, getStateDefault)
 import System.Taffybar.Information.OpenAIUsage
 import System.Taffybar.Util (postGUIASync)
-import System.Taffybar.Widget.Util (widgetSetClassGI)
+import System.Taffybar.Widget.Util (buildIconLabelBox, widgetSetClassGI)
 import Text.Printf (printf)
 
 data OpenAIUsageDisplayMode
@@ -47,6 +48,15 @@ data OpenAIUsageDisplayMode
 newtype OpenAIUsageDisplayModeState
   = OpenAIUsageDisplayModeState
       (MVar OpenAIUsageDisplayMode, TChan OpenAIUsageDisplayMode)
+
+data OpenAIUsageLabelParts = OpenAIUsageLabelParts
+  { openAIUsageLabelWidget :: Gtk.Widget,
+    openAIUsageLabel :: Gtk.Label,
+    openAIUsageLabelDisplayState :: OpenAIUsageDisplayModeState,
+    openAIUsageLabelSnapshotVar :: MVar OpenAIUsageSnapshot,
+    openAIUsageLabelUsageChan :: TChan OpenAIUsageSnapshot,
+    openAIUsageLabelRefreshNow :: IO ()
+  }
 
 data OpenAIUsageLabelConfig = OpenAIUsageLabelConfig
   { openAIUsageLabelInfoConfig :: OpenAIUsageConfig,
@@ -113,15 +123,38 @@ openAIUsageStackNew = openAIUsageStackNewWith defaultOpenAIUsageStackConfig
 
 openAIUsageStackNewWith :: OpenAIUsageStackConfig -> TaffyIO Gtk.Widget
 openAIUsageStackNewWith config = do
-  primary <- openAIUsageLabelNewWith $ windowLabelConfig OpenAIUsagePrimaryWindow config
-  secondary <- openAIUsageLabelNewWith $ windowLabelConfig OpenAIUsageSecondaryWindow config
+  (stack, primaryParts) <- openAIUsageStackPartsNewWith config
+  liftIO $
+    wrapOpenAIUsageMenu
+      "openai-usage"
+      stack
+      (windowLabelConfig OpenAIUsagePrimaryWindow config)
+      primaryParts
+
+openAIUsageSectionNewWith :: Gtk.Widget -> OpenAIUsageStackConfig -> TaffyIO Gtk.Widget
+openAIUsageSectionNewWith iconWidget config = do
+  (stack, primaryParts) <- openAIUsageStackPartsNewWith config
+  liftIO $ do
+    section <- buildIconLabelBox iconWidget stack
+    _ <- widgetSetClassGI section "usage-section"
+    wrapOpenAIUsageMenu
+      "openai-usage"
+      section
+      (windowLabelConfig OpenAIUsagePrimaryWindow config)
+      primaryParts
+
+openAIUsageStackPartsNewWith :: OpenAIUsageStackConfig -> TaffyIO (Gtk.Widget, OpenAIUsageLabelParts)
+openAIUsageStackPartsNewWith config = do
+  primaryParts <- openAIUsageLabelPartsNewWith $ windowLabelConfig OpenAIUsagePrimaryWindow config
+  secondaryParts <- openAIUsageLabelPartsNewWith $ windowLabelConfig OpenAIUsageSecondaryWindow config
   liftIO $ do
     box <- Gtk.boxNew Gtk.OrientationVertical 0
     _ <- widgetSetClassGI box "openai-usage-stack"
-    Gtk.boxPackStart box primary False False 0
-    Gtk.boxPackStart box secondary False False 0
+    Gtk.boxPackStart box (openAIUsageLabelWidget primaryParts) False False 0
+    Gtk.boxPackStart box (openAIUsageLabelWidget secondaryParts) False False 0
     Gtk.widgetShowAll box
-    Gtk.toWidget box
+    widget <- Gtk.toWidget box
+    return (widget, primaryParts)
 
 windowLabelConfig :: OpenAIUsageWindowSelector -> OpenAIUsageStackConfig -> OpenAIUsageLabelConfig
 windowLabelConfig selector stackConfig =
@@ -136,6 +169,11 @@ windowLabelConfig selector stackConfig =
 
 openAIUsageLabelNewWith :: OpenAIUsageLabelConfig -> TaffyIO Gtk.Widget
 openAIUsageLabelNewWith config = do
+  parts <- openAIUsageLabelPartsNewWith config
+  liftIO $ wrapOpenAIUsageMenu "openai-usage" (openAIUsageLabelWidget parts) config parts
+
+openAIUsageLabelPartsNewWith :: OpenAIUsageLabelConfig -> TaffyIO OpenAIUsageLabelParts
+openAIUsageLabelPartsNewWith config = do
   let infoConfig = openAIUsageLabelInfoConfig config
   usageChan <- getOpenAIUsageChan infoConfig
   initialSnapshot <- getOpenAIUsageState infoConfig
@@ -144,29 +182,103 @@ openAIUsageLabelNewWith config = do
 
   liftIO $ do
     label <- Gtk.labelNew (Just (openAIUsageLabelFallbackText config))
-    ebox <- Gtk.eventBoxNew
     snapshotVar <- newMVar initialSnapshot
     let refreshNow = runReaderT (forceOpenAIUsageRefresh infoConfig) ctx
     _ <- widgetSetClassGI label (openAIUsageLabelClass config)
-    _ <- widgetSetClassGI ebox "openai-usage"
-    Gtk.containerAdd ebox label
     updateLabelFromState config label displayState initialSnapshot
 
-    void $ Gtk.onWidgetRealize ebox $ do
+    void $ Gtk.onWidgetRealize label $ do
       usageThread <- forkUsageListener config label displayState snapshotVar usageChan
       modeThread <- forkDisplayModeListener config label displayState snapshotVar
-      void $ Gtk.onWidgetUnrealize ebox $ do
+      void $ Gtk.onWidgetUnrealize label $ do
         killThread usageThread
         killThread modeThread
 
-    void $
-      Gtk.onWidgetButtonPressEvent ebox $ \_event -> do
-        refreshNow
-        showUsageMenu ebox config label displayState snapshotVar refreshNow
-        return True
+    Gtk.widgetShowAll label
+    widget <- Gtk.toWidget label
+    return $
+      OpenAIUsageLabelParts
+        { openAIUsageLabelWidget = widget,
+          openAIUsageLabel = label,
+          openAIUsageLabelDisplayState = displayState,
+          openAIUsageLabelSnapshotVar = snapshotVar,
+          openAIUsageLabelUsageChan = usageChan,
+          openAIUsageLabelRefreshNow = refreshNow
+        }
 
-    Gtk.widgetShowAll ebox
-    Gtk.toWidget ebox
+wrapOpenAIUsageMenu ::
+  T.Text ->
+  Gtk.Widget ->
+  OpenAIUsageLabelConfig ->
+  OpenAIUsageLabelParts ->
+  IO Gtk.Widget
+wrapOpenAIUsageMenu klass child config parts = do
+  ebox <- Gtk.eventBoxNew
+  _ <- widgetSetClassGI ebox klass
+  Gtk.containerAdd ebox child
+  initialSnapshot <- readMVar (openAIUsageLabelSnapshotVar parts)
+  menu <-
+    buildUsageMenu
+      ebox
+      config
+      (openAIUsageLabel parts)
+      (openAIUsageLabelDisplayState parts)
+      (openAIUsageLabelSnapshotVar parts)
+      (openAIUsageLabelRefreshNow parts)
+      initialSnapshot
+  menuVar <- newTVarIO menu
+
+  let rebuildMenu snapshot =
+        buildUsageMenu
+          ebox
+          config
+          (openAIUsageLabel parts)
+          (openAIUsageLabelDisplayState parts)
+          (openAIUsageLabelSnapshotVar parts)
+          (openAIUsageLabelRefreshNow parts)
+          snapshot
+          >>= atomically . writeTVar menuVar
+
+  void $ Gtk.onWidgetRealize ebox $ do
+    menuThread <-
+      forkCachedMenuUpdater
+        rebuildMenu
+        (openAIUsageLabelSnapshotVar parts)
+        (openAIUsageLabelUsageChan parts)
+    void $ Gtk.onWidgetUnrealize ebox $ killThread menuThread
+
+  void $
+    Gtk.onWidgetButtonPressEvent ebox $ \_event -> do
+      currentEvent <- Gtk.getCurrentEvent
+      readyMenu <- readTVarIO menuVar
+      Gtk.menuPopupAtPointer readyMenu currentEvent
+      void $ forkIO (openAIUsageLabelRefreshNow parts)
+      return True
+  Gtk.widgetShowAll ebox
+  Gtk.toWidget ebox
+
+buildUsageMenu ::
+  Gtk.EventBox ->
+  OpenAIUsageLabelConfig ->
+  Gtk.Label ->
+  OpenAIUsageDisplayModeState ->
+  MVar OpenAIUsageSnapshot ->
+  IO () ->
+  OpenAIUsageSnapshot ->
+  IO Gtk.Menu
+buildUsageMenu anchor config label displayState snapshotVar refreshNow snapshot = do
+  menu <- Gtk.menuNew
+  Gtk.menuAttachToWidget menu anchor Nothing
+  appendUsageMenuContents
+    menu
+    config
+    label
+    displayState
+    snapshotVar
+    refreshNow
+    snapshot
+  Gtk.widgetShowAll menu
+  return menu
 
 getOpenAIUsageDisplayModeState :: OpenAIUsageDisplayMode -> TaffyIO OpenAIUsageDisplayModeState
 getOpenAIUsageDisplayModeState defaultMode =
@@ -270,21 +382,33 @@ formatOpenAIUsageTooltip displayMode snapshot =
               ("Reached: " <>) <$> openAIUsageReachedType info
             ]
 
-showUsageMenu ::
-  Gtk.EventBox ->
+forkCachedMenuUpdater ::
+  (OpenAIUsageSnapshot -> IO ()) ->
+  MVar OpenAIUsageSnapshot ->
+  TChan OpenAIUsageSnapshot ->
+  IO ThreadId
+forkCachedMenuUpdater rebuildMenu snapshotVar usageChan = do
+  ourUsageChan <- atomically $ dupTChan usageChan
+  forkIO $
+    forever $ do
+      snapshot <- atomically $ readTChan ourUsageChan
+      void $ swapMVar snapshotVar snapshot
+      void $
+        GLib.idleAdd GLib.PRIORITY_LOW $ do
+          rebuildMenu snapshot
+          return False
+
+appendUsageMenuContents ::
+  Gtk.Menu ->
   OpenAIUsageLabelConfig ->
   Gtk.Label ->
   OpenAIUsageDisplayModeState ->
   MVar OpenAIUsageSnapshot ->
   IO () ->
+  OpenAIUsageSnapshot ->
   IO ()
-showUsageMenu anchor config label displayState snapshotVar refreshNow = do
-  currentEvent <- Gtk.getCurrentEvent
-  snapshot <- readMVar snapshotVar
+appendUsageMenuContents menu config label displayState snapshotVar refreshNow snapshot = do
   displayMode <- readDisplayMode displayState
-  menu <- Gtk.menuNew
-  Gtk.menuAttachToWidget menu anchor Nothing
-
   appendInfoItem menu "OpenAI Codex usage"
   appendSnapshotMenuItems menu displayMode snapshot
 
@@ -297,22 +421,13 @@ showUsageMenu anchor config label displayState snapshotVar refreshNow = do
   void $
     Gtk.onMenuItemActivate toggleItem $ do
       setDisplayMode displayState (toggleDisplayMode displayMode)
-      readMVar snapshotVar >>= updateLabelFromState config label displayState
+      snapshot' <- readMVar snapshotVar
+      updateLabelFromState config label displayState snapshot'
   Gtk.menuShellAppend menu toggleItem
 
   refreshItem <- Gtk.menuItemNewWithLabel ("Refresh" :: T.Text)
-  void $ Gtk.onMenuItemActivate refreshItem refreshNow
+  void $ Gtk.onMenuItemActivate refreshItem $ void $ forkIO refreshNow
   Gtk.menuShellAppend menu refreshItem
-
-  void $
-    Gtk.onWidgetHide menu $
-      void $
-        GLib.idleAdd GLib.PRIORITY_LOW $ do
-          Gtk.widgetDestroy menu
-          return False
-
-  Gtk.widgetShowAll menu
-  Gtk.menuPopupAtPointer menu currentEvent
 
 appendInfoItem :: Gtk.Menu -> T.Text -> IO ()
 appendInfoItem menu text = do
