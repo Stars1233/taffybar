@@ -28,11 +28,13 @@ where
 import Control.Monad (unless, void, when)
 import Control.Monad.IO.Class
 import Data.Foldable (foldlM)
+import Data.Int (Int32)
 import qualified Data.Text as T
+import qualified GI.GdkPixbuf.Objects.Pixbuf as Gdk
 import qualified GI.Gtk as Gtk
 import System.Log.Logger
 import System.Process
-import System.Taffybar.Widget.Generic.AutoSizeImage
+import System.Taffybar.Widget.Generic.AutoFillImage
 import System.Taffybar.Widget.Generic.DynamicMenu
 import System.Taffybar.Widget.Util
 import System.Taffybar.Widget.XDGMenu.Menu
@@ -109,6 +111,31 @@ omniMenuNewWithConfig OmniMenuConfig {..} = do
 omniMenuLog :: Priority -> String -> IO ()
 omniMenuLog = logM "System.Taffybar.Widget.OmniMenu"
 
+omniMenuImageMenuItemNew ::
+  T.Text -> (Int32 -> IO (Maybe Gdk.Pixbuf)) -> IO Gtk.MenuItem
+omniMenuImageMenuItemNew labelText pixbufGetter = do
+  box <- Gtk.boxNew Gtk.OrientationHorizontal 6
+  iconSlot <- Gtk.boxNew Gtk.OrientationHorizontal 0
+  label <- Gtk.labelNew $ Just labelText
+  image <- autoFillImageNew pixbufGetter Gtk.OrientationHorizontal
+  item <- Gtk.menuItemNew
+  Gtk.widgetSetSizeRequest iconSlot omniMenuIconSize omniMenuIconSize
+  Gtk.containerAdd iconSlot image
+  Gtk.containerAdd box iconSlot
+  Gtk.containerAdd box label
+  Gtk.containerAdd item box
+  Gtk.widgetSetHalign box Gtk.AlignStart
+  Gtk.widgetSetHalign iconSlot Gtk.AlignCenter
+  Gtk.widgetSetValign iconSlot Gtk.AlignCenter
+  Gtk.widgetSetHalign image Gtk.AlignCenter
+  Gtk.widgetSetValign image Gtk.AlignCenter
+  Gtk.widgetSetValign label Gtk.AlignCenter
+  Gtk.widgetSetValign box Gtk.AlignFill
+  return item
+
+omniMenuIconSize :: Int32
+omniMenuIconSize = 16
+
 addApplicationsMenu :: (Gtk.IsMenuShell menuShell) => menuShell -> Maybe String -> IO Bool
 addApplicationsMenu menuShell menuPrefix = do
   xdgMenu <- buildMenu menuPrefix
@@ -135,7 +162,7 @@ addXDGSubmenu :: (Gtk.IsMenuShell menuShell) => menuShell -> Menu -> IO ()
 addXDGSubmenu menuShell menu@Menu {..} =
   unless (null fmEntries && null fmSubmenus) $ do
     item <-
-      imageMenuItemNew
+      omniMenuImageMenuItemNew
         (T.pack fmName)
         (getImageForMaybeIconName (T.pack <$> fmIcon))
     submenu <- Gtk.menuNew
@@ -145,7 +172,7 @@ addXDGSubmenu menuShell menu@Menu {..} =
 
 addXDGEntry :: (Gtk.IsMenuShell menuShell) => menuShell -> MenuEntry -> IO ()
 addXDGEntry menuShell MenuEntry {..} = do
-  item <- imageMenuItemNew feName (getImageForMaybeIconName feIcon)
+  item <- omniMenuImageMenuItemNew feName (getImageForMaybeIconName feIcon)
   Gtk.widgetSetTooltipText item (Just feComment)
   Gtk.menuShellAppend menuShell item
   void $ Gtk.onMenuItemActivate item $ do
@@ -176,7 +203,7 @@ addSectionHeader menuShell label = do
 addCommandItem :: (Gtk.IsMenuShell menuShell) => menuShell -> OmniMenuItem -> IO ()
 addCommandItem menuShell OmniMenuItem {..} = do
   item <-
-    imageMenuItemNew
+    omniMenuImageMenuItemNew
       omniMenuItemLabel
       (getImageForMaybeIconName omniMenuItemIcon)
   Gtk.widgetSetTooltipText item omniMenuItemTooltip
