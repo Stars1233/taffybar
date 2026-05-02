@@ -135,6 +135,7 @@ library
                  , System.Taffybar.Hyprland
                  , System.Taffybar.Hooks
                  , System.Taffybar.Information.Hyprland
+                 , System.Taffybar.Information.HyprlandWorkspaceHistory
                  , System.Taffybar.Information.PulseAudio
                  , System.Taffybar.Information.WirePlumber
                  , System.Taffybar.Information.AnthropicUsage
