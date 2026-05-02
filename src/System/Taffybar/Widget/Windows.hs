@@ -34,6 +34,7 @@ import qualified Data.Text as T
 import qualified GI.GdkPixbuf.Objects.Pixbuf as Gdk
 import qualified GI.Gtk as Gtk
 import qualified GI.Pango as Pango
+import qualified Graphics.UI.GIGtkScalingImage as Scaling
 import System.Taffybar.Context
 import System.Taffybar.Information.EWMHDesktopInfo
   ( ewmhWMIcon,
@@ -218,19 +219,14 @@ fillMenu config snapshot menu =
     forM_ windows $ \windowInfo ->
       lift $ do
         labelText <- runReaderT (getMenuLabel config windowInfo) context
-        iconPixbuf <-
-          case getActiveWindowIconPixbuf config of
-            Nothing -> pure Nothing
-            Just getIcon -> runReaderT (getIcon windowsMenuIconSize windowInfo) context
         let focusCallback =
               runReaderT (onMenuWindowClick config windowInfo) context
                 >> return True
         item <- Gtk.menuItemNew
         content <- Gtk.boxNew Gtk.OrientationHorizontal 6
-        forM_ iconPixbuf $ \pixbuf -> do
-          icon <- Gtk.imageNewFromPixbuf (Just pixbuf)
+        forM_ (getActiveWindowIconPixbuf config) $ \getIcon -> do
+          icon <- buildMenuIcon context getIcon windowInfo
           Gtk.boxPackStart content icon False False 0
-          pure icon
         label <- Gtk.labelNew (Just labelText)
         Gtk.labelSetXalign label 0
         Gtk.boxPackStart content label True True 0
@@ -244,8 +240,25 @@ clearMenu menu =
   Gtk.containerForeach menu $ \item ->
     Gtk.containerRemove menu item >> Gtk.widgetDestroy item
 
+buildMenuIcon ::
+  Context ->
+  (Int32 -> WindowInfo -> TaffyIO (Maybe Gdk.Pixbuf)) ->
+  WindowInfo ->
+  IO Gtk.DrawingArea
+buildMenuIcon context getIcon windowInfo = do
+  icon <- Gtk.drawingAreaNew
+  Gtk.widgetSetSizeRequest icon windowsMenuIconSize windowsMenuIconSize
+  Gtk.setWidgetHalign icon Gtk.AlignCenter
+  Gtk.setWidgetValign icon Gtk.AlignCenter
+  void $
+    Scaling.autoFillImage
+      icon
+      (\size -> runReaderT (getIcon size windowInfo) context)
+      Gtk.OrientationHorizontal
+  return icon
+
 windowsMenuIconSize :: Int32
-windowsMenuIconSize = fromIntegral $ fromEnum Gtk.IconSizeMenu
+windowsMenuIconSize = 16
 
 getWindows :: WorkspaceSnapshot -> [WindowInfo]
 getWindows snapshot = reverse ordered
