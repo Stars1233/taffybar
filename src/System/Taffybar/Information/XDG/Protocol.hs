@@ -67,9 +67,16 @@ getXDGMenuFilenames mMenuPrefix = do
       (getXdgDirectory XdgConfig "")
       (getXdgDirectoryList XdgConfigDirs)
   maybePrefix <- (mMenuPrefix <|>) <$> getXDGMenuPrefix
-  let maybeAddDash t = if last t == '-' then t else t ++ "-"
-      dashedPrefix = maybe "" maybeAddDash maybePrefix
-  return $ map (</> "menus" </> dashedPrefix ++ "applications.menu") configDirs
+  let maybeAddDash "" = ""
+      maybeAddDash t = if last t == '-' then t else t ++ "-"
+      prefixes =
+        nub $
+          case maybePrefix of
+            Nothing -> [""]
+            Just prefix -> [maybeAddDash prefix, ""]
+      menuFilename prefix dir =
+        dir </> "menus" </> (prefix ++ "applications.menu")
+  return [menuFilename prefix dir | prefix <- prefixes, dir <- configDirs]
 
 -- | XDG Menu, cf. "Desktop Menu Specification".
 data XDGMenu = XDGMenu

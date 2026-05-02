@@ -27,6 +27,7 @@ where
 
 import Control.Monad (unless, void, when)
 import Control.Monad.IO.Class
+import Data.Foldable (foldlM)
 import qualified Data.Text as T
 import qualified GI.Gtk as Gtk
 import System.Log.Logger
@@ -98,22 +99,32 @@ omniMenuNewWithConfig OmniMenuConfig {..} = do
   return menuButton
   where
     populateOmniMenu menu = do
-      when omniMenuIncludeApplications $
-        addApplicationsMenu menu omniMenuXDGMenuPrefix
-      mapM_ (addSection menu) omniMenuSections
+      applicationsAdded <-
+        if omniMenuIncludeApplications
+          then addApplicationsMenu menu omniMenuXDGMenuPrefix
+          else pure False
+      void $ foldlM (addSection menu) applicationsAdded omniMenuSections
       Gtk.widgetShowAll menu
 
 omniMenuLog :: Priority -> String -> IO ()
 omniMenuLog = logM "System.Taffybar.Widget.OmniMenu"
 
-addApplicationsMenu :: (Gtk.IsMenuShell menuShell) => menuShell -> Maybe String -> IO ()
+addApplicationsMenu :: (Gtk.IsMenuShell menuShell) => menuShell -> Maybe String -> IO Bool
 addApplicationsMenu menuShell menuPrefix = do
   xdgMenu <- buildMenu menuPrefix
-  item <- Gtk.menuItemNewWithLabel "Applications"
-  submenu <- Gtk.menuNew
-  Gtk.menuItemSetSubmenu item (Just submenu)
-  addXDGMenuContents submenu xdgMenu
-  Gtk.menuShellAppend menuShell item
+  if isEmptyXDGMenu xdgMenu
+    then pure False
+    else do
+      item <- Gtk.menuItemNewWithLabel "Applications"
+      submenu <- Gtk.menuNew
+      Gtk.menuItemSetSubmenu item (Just submenu)
+      addXDGMenuContents submenu xdgMenu
+      Gtk.menuShellAppend menuShell item
+      pure True
+
+isEmptyXDGMenu :: Menu -> Bool
+isEmptyXDGMenu Menu {..} =
+  null fmEntries && all isEmptyXDGMenu fmSubmenus
 
 addXDGMenuContents :: (Gtk.IsMenuShell menuShell) => menuShell -> Menu -> IO ()
 addXDGMenuContents menuShell Menu {..} = do
@@ -141,14 +152,26 @@ addXDGEntry menuShell MenuEntry {..} = do
     omniMenuLog DEBUG $ "Launching '" ++ feCommand ++ "'"
     void $ spawnCommand feCommand
 
-addSection :: (Gtk.IsMenuShell menuShell) => menuShell -> OmniMenuSection -> IO ()
-addSection menuShell OmniMenuSection {..} =
-  unless (null omniMenuSectionItems) $ do
-    item <- Gtk.menuItemNewWithLabel omniMenuSectionLabel
-    submenu <- Gtk.menuNew
-    Gtk.menuItemSetSubmenu item (Just submenu)
-    mapM_ (addCommandItem submenu) omniMenuSectionItems
-    Gtk.menuShellAppend menuShell item
+addSection :: (Gtk.IsMenuShell menuShell) => menuShell -> Bool -> OmniMenuSection -> IO Bool
+addSection menuShell hasPrevious OmniMenuSection {..} =
+  if null omniMenuSectionItems
+    then pure hasPrevious
+    else do
+      when hasPrevious $ addSeparator menuShell
+      addSectionHeader menuShell omniMenuSectionLabel
+      mapM_ (addCommandItem menuShell) omniMenuSectionItems
+      pure True
+
+addSeparator :: (Gtk.IsMenuShell menuShell) => menuShell -> IO ()
+addSeparator menuShell = do
+  separator <- Gtk.separatorMenuItemNew
+  Gtk.menuShellAppend menuShell separator
+
+addSectionHeader :: (Gtk.IsMenuShell menuShell) => menuShell -> T.Text -> IO ()
+addSectionHeader menuShell label = do
+  item <- Gtk.menuItemNewWithLabel label
+  Gtk.widgetSetSensitive item False
+  Gtk.menuShellAppend menuShell item
 
 addCommandItem :: (Gtk.IsMenuShell menuShell) => menuShell -> OmniMenuItem -> IO ()
 addCommandItem menuShell OmniMenuItem {..} = do
