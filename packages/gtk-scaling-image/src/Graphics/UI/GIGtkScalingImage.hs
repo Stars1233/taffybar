@@ -251,6 +251,7 @@ autoFillImage drawArea getPixbuf orientation = liftIO $ do
                 Gtk.OrientationHorizontal -> contentH
                 _ -> contentW
             scaledFactor = max 1 scaleFactor
+            sourceRequestSize = max 1 $ requestSize * scaledFactor
 
         Gtk.widgetSetSizeRequest
           drawArea
@@ -259,14 +260,14 @@ autoFillImage drawArea getPixbuf orientation = liftIO $ do
 
         old <- MV.readMVar cacheVar
         srcFresh <-
-          if force || requestSize /= afRequestSize old
-            then getPixbuf requestSize
+          if force || sourceRequestSize /= afRequestSize old
+            then getPixbuf sourceRequestSize
             else pure Nothing
 
         let src = srcFresh <|> afSourcePixbuf old
             needsRefit =
               force
-                || requestSize /= afRequestSize old
+                || sourceRequestSize /= afRequestSize old
                 || scaledFactor /= afScaleFactor old
                 || insets /= afInsets old
                 || contentW /= afContentWidth old
@@ -278,7 +279,7 @@ autoFillImage drawArea getPixbuf orientation = liftIO $ do
               Nothing ->
                 pure
                   old
-                    { afRequestSize = requestSize,
+                    { afRequestSize = sourceRequestSize,
                       afScaleFactor = scaledFactor,
                       afInsets = insets,
                       afContentWidth = contentW,
@@ -293,7 +294,7 @@ autoFillImage drawArea getPixbuf orientation = liftIO $ do
                   fitPixbufToBox scaledFactor insets allocW allocH pb
                 pure
                   old
-                    { afRequestSize = requestSize,
+                    { afRequestSize = sourceRequestSize,
                       afScaleFactor = scaledFactor,
                       afInsets = insets,
                       afContentWidth = cw,
