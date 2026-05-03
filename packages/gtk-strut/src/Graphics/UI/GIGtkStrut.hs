@@ -10,7 +10,6 @@ module Graphics.UI.GIGtkStrut
 where
 
 import Control.Monad
-import Control.Monad.Fail (MonadFail)
 import Control.Monad.IO.Class
 import Data.Default
 import Data.IORef
@@ -56,6 +55,7 @@ data StrutConfig = StrutConfig
   }
   deriving (Show, Eq)
 
+defaultStrutConfig :: StrutConfig
 defaultStrutConfig =
   StrutConfig
     { strutWidth = ScreenRatio 1,

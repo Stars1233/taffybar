@@ -1,4 +1,5 @@
 {-# LANGUAGE TemplateHaskell #-}
+{-# OPTIONS_GHC -Wno-unused-matches #-}
 
 module StatusNotifier.Watcher.Signals where
 
@@ -13,6 +14,7 @@ generateSignals
   defaultWatcherInterfaceName
   watcherSignals
 
+printWatcherSignals :: IO ()
 printWatcherSignals =
   runQ
     ( generateSignals

@@ -30,15 +30,21 @@ splitServiceName name =
     _ -> (name, Nothing)
 
 getIntrospectionObjectFromFile :: FilePath -> T.ObjectPath -> Q I.Object
-getIntrospectionObjectFromFile filepath nodePath =
-  runIO $
-    head . maybeToList . I.parseXML nodePath <$> TIO.readFile filepath
+getIntrospectionObjectFromFile filepath nodePath = do
+  object <- runIO $ I.parseXML nodePath <$> TIO.readFile filepath
+  maybe
+    (fail $ "Unable to parse introspection XML from " <> filepath)
+    pure
+    object
 
 generateClientFromFile :: G.GenerationParams -> Bool -> FilePath -> Q [Dec]
 generateClientFromFile params useObjectPath filepath = do
   object <- getIntrospectionObjectFromFile filepath "/"
-  let interface = head $ I.objectInterfaces object
-      actualObjectPath = I.objectPath object
+  interface <-
+    case I.objectInterfaces object of
+      interface : _ -> pure interface
+      [] -> fail $ "No interfaces found in introspection XML from " <> filepath
+  let actualObjectPath = I.objectPath object
       realParams =
         if useObjectPath
           then params {G.genObjectPath = Just actualObjectPath}

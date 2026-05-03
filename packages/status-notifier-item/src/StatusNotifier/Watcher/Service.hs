@@ -10,7 +10,6 @@ import Control.Monad.Trans.Class
 import Control.Monad.Trans.Except
 import DBus
 import DBus.Client
-import DBus.Generation
 import DBus.Internal.Message as M
 import DBus.Internal.Types
 import qualified DBus.Internal.Types as T
@@ -20,7 +19,6 @@ import Data.Coerce
 import Data.Int
 import Data.List
 import Data.Maybe
-import Data.Monoid
 import Data.String
 import qualified StatusNotifier.Item.Client as Item
 import StatusNotifier.Util
@@ -31,6 +29,7 @@ import System.IO.Unsafe
 import System.Log.Logger
 import Text.Printf
 
+buildWatcher :: WatcherParams -> IO (Interface, IO RequestNameReply)
 buildWatcher
   WatcherParams
     { watcherNamespace = interfaceNamespace,
@@ -86,10 +85,10 @@ buildWatcher
         renderServiceName
           ItemEntry
             { serviceName = busName,
-              servicePath = path
+              servicePath = itemPath
             } =
             let bus = (coerce busName :: String)
-                objPath = (coerce path :: String)
+                objPath = (coerce itemPath :: String)
                 defaultPath = (coerce Item.defaultPath :: String)
              in if objPath == defaultPath
                   then bus
@@ -247,7 +246,7 @@ buildWatcher
                   makeErrorReply
                     errorInvalidParameters
                     "Unable to identify sender for registration."
-                path = fromMaybe Item.defaultPath $ T.parseObjectPath name
+                itemPath = fromMaybe Item.defaultPath $ T.parseObjectPath name
                 remapErrorName =
                   left $
                     (`makeErrorReply` "Failed to verify ownership.")
@@ -283,7 +282,7 @@ buildWatcher
             let item =
                   ItemEntry
                     { serviceName = busName,
-                      servicePath = path
+                      servicePath = itemPath
                     }
             changed <- lift $ modifyMVar notifierItems $ \currentItems -> do
               (newItems, inserted) <- insertItemNoSignal (Just senderName) item currentItems
@@ -317,12 +316,12 @@ buildWatcher
         registeredSNIEntries =
           map getTuple <$> readMVar notifierItems
           where
-            getTuple (ItemEntry bname path) = (coerce bname, coerce path)
+            getTuple (ItemEntry bname itemPath) = (coerce bname, coerce itemPath)
 
         objectPathForItem :: String -> IO (Either Reply String)
         objectPathForItem name =
           case splitServiceName name of
-            (_, Just path) -> return $ Right path
+            (_, Just itemPath) -> return $ Right itemPath
             (bus, Nothing) ->
               maybeToEither notFoundError
                 . fmap (coerce . servicePath)
@@ -342,7 +341,7 @@ buildWatcher
           modifyMVar mvar $
             return . partition ((/= busName_ deadService) . serviceName)
 
-        handleNameOwnerChanged _ name oldOwner newOwner =
+        handleNameOwnerChanged _ name _oldOwner newOwner =
           when (newOwner == "") $ do
             removedItems <- filterDeadService name notifierItems
             unless (null removedItems) $ do
@@ -389,7 +388,7 @@ buildWatcher
               protocolVersion
           ]
 
-        watcherInterface =
+        builtWatcherInterface =
           Interface
             { interfaceName = watcherInterfaceName,
               interfaceMethods = watcherMethods,
@@ -408,7 +407,7 @@ buildWatcher
                     matchAny
                     handleNameOwnerChanged
                 (restoredItems, restoredHosts) <- restoreWatcherStateFromCache
-                export client (fromString path) watcherInterface
+                export client (fromString path) builtWatcherInterface
                 logInfo $
                   printf
                     "Restored %d cached items and %d cached hosts."
@@ -421,12 +420,13 @@ buildWatcher
             _ -> stopWatcher
           return nameRequestResult
 
-    return (watcherInterface, startWatcher)
+    return (builtWatcherInterface, startWatcher)
 
 -- For Client generation
 -- TODO: get rid of unsafePerformIO here by making function that takes mvars so
 -- IO isn't needed to build watcher
 {-# NOINLINE watcherInterface #-}
+watcherInterface :: I.Interface
 watcherInterface = buildIntrospectionInterface clientInterface
   where
     (clientInterface, _) =

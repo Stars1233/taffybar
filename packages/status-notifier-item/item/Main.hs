@@ -1,14 +1,13 @@
 module Main where
 
-import Control.Concurrent.MVar
 import Control.Monad
-import Data.Semigroup ((<>))
 import Data.Version (showVersion)
 import Options.Applicative
 import Paths_status_notifier_item (version)
 import StatusNotifier.Item.Service
 import Text.Printf
 
+itemsParamsParser :: Parser ItemParams
 itemsParamsParser =
   ItemParams
     <$> strOption
@@ -50,5 +49,5 @@ main = do
         ( fullDesc
             <> progDesc "Run a static StatusNotifierItem"
         )
-  buildItem itemParams
+  _ <- buildItem itemParams
   void getChar

@@ -5,7 +5,6 @@ module Main where
 import Control.Monad
 import DBus
 import DBus.Client
-import Data.Semigroup ((<>))
 import Options.Applicative
 import System.Log.DBus.Client
 
@@ -42,6 +41,7 @@ busNameP =
 doSetLogLevel :: Client -> Parser (IO (Either MethodError ()))
 doSetLogLevel client = setLogLevel client <$> busNameP <*> prefixP <*> levelP
 
+main :: IO ()
 main = do
   client <- connectSession
   res <-

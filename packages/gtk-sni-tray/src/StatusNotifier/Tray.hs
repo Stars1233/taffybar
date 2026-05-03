@@ -162,9 +162,9 @@ getIconPixbufByName size name themePath = do
   -- Avoid relying on iconThemeHasIcon: it can be overly strict when fallback
   -- loading is enabled. Just try to load and fall back if it fails.
   let tryLoad :: T.Text -> IO (Maybe Pixbuf)
-      tryLoad iconName =
+      tryLoad themedName =
         catchAny
-          (iconThemeLoadIcon themeForIcon iconName size themeLoadFlags)
+          (iconThemeLoadIcon themeForIcon themedName size themeLoadFlags)
           (const $ pure Nothing)
 
   themedPixbuf <- do
@@ -625,11 +625,11 @@ buildTray
                         ContextMap.reserveContext serviceName contexts
                    in pure (newContexts, reserved)
                 forM_ reservation $
-                  \reservation ->
+                  \reservedContext ->
                     flip
                       onException
                       ( MV.modifyMVar_ contextMap $
-                          pure . ContextMap.cancelReservation serviceName reservation
+                          pure . ContextMap.cancelReservation serviceName reservedContext
                       )
                       $ do
                         let serviceNameStr = (coerce serviceName :: String)
@@ -870,7 +870,7 @@ buildTray
 
                         didFinalize <- MV.modifyMVar contextMap $ \contexts ->
                           let (finalized, newContexts) =
-                                ContextMap.setReadyContext serviceName reservation context contexts
+                                ContextMap.setReadyContext serviceName reservedContext context contexts
                            in pure (newContexts, finalized)
 
                         if didFinalize
@@ -891,11 +891,6 @@ buildTray
                                 serviceNameStr
                                 servicePathStr
                             Gtk.widgetDestroy eventBox
-          updateHandler ItemAdded ItemInfo {itemServiceName = serviceName} =
-            trayLogger DEBUG $
-              printf
-                "Skipping duplicate tray add for %s while a widget is pending or ready."
-                (coerce serviceName :: String)
           updateHandler ItemRemoved ItemInfo {itemServiceName = name} =
             MV.modifyMVar contextMap removeContext >>= removeWidget
             where

@@ -5,8 +5,6 @@ module Graphics.UI.EWMHStrut where
 
 import Control.Monad.IO.Class
 import Data.Int
-import Data.Text
-import Data.Word
 import Foreign.C.Types
 import Foreign.Marshal.Array
 import Foreign.Ptr
@@ -29,6 +27,7 @@ data EWMHStrutSettings = EWMHStrutSettings
   }
   deriving (Show, Eq)
 
+zeroStrutSettings :: EWMHStrutSettings
 zeroStrutSettings =
   EWMHStrutSettings
     { _left = 0,

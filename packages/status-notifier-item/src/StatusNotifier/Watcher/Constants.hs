@@ -8,9 +8,6 @@ import DBus.Internal.Types
 import qualified DBus.Introspection as I
 import Data.Coerce
 import Data.String
-import StatusNotifier.Util
-import System.IO.Unsafe
-import System.Log.Logger
 import Text.Printf
 
 statusNotifierWatcherString :: String
@@ -44,15 +41,18 @@ defaultWatcherParams =
       watcherStateCachePath = Nothing
     }
 
+defaultWatcherInterfaceName :: InterfaceName
 defaultWatcherInterfaceName =
   getWatcherInterfaceName $ watcherNamespace defaultWatcherParams
 
+serviceArg :: I.SignalArg
 serviceArg =
   I.SignalArg
     { I.signalArgName = "service",
       I.signalArgType = TypeString
     }
 
+watcherSignals :: [I.Signal]
 watcherSignals =
   [ I.Signal
       { I.signalName = "StatusNotifierItemRegistered",
@@ -68,6 +68,7 @@ watcherSignals =
       }
   ]
 
+watcherClientGenerationParams :: GenerationParams
 watcherClientGenerationParams =
   defaultGenerationParams
     { genBusName =

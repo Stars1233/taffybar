@@ -2,11 +2,8 @@
 
 module StatusNotifier.Item.Service where
 
-import Control.Monad.Trans.Class
-import Control.Monad.Trans.Except
 import DBus
 import DBus.Client
-import qualified DBus.TH as DBusTH
 import qualified Data.ByteString as BS
 import Data.Int
 import Data.String
@@ -19,11 +16,12 @@ data ItemParams = ItemParams
   }
   deriving (Eq, Show, Read)
 
+buildItem :: ItemParams -> IO (Either MethodError ())
 buildItem
   ItemParams
     { iconName = name,
       iconOverlayName = overlayName,
-      itemDBusName = dbusName
+      itemDBusName = itemBusName
     } = do
     client <- connectSession
     let getTooltip :: IO (String, [(Int32, Int32, BS.ByteString)], String, String)
@@ -40,5 +38,5 @@ buildItem
               interfaceSignals = []
             }
     export client (fromString "/StatusNotifierItem") clientInterface
-    requestName client (busName_ dbusName) []
-    W.registerStatusNotifierItem client dbusName
+    _ <- requestName client (busName_ itemBusName) []
+    W.registerStatusNotifierItem client itemBusName

@@ -3,7 +3,6 @@ module Main where
 import Control.Concurrent.MVar
 import Control.Monad
 import DBus.Client
-import Data.Semigroup ((<>))
 import Data.Version (showVersion)
 import Options.Applicative
 import Paths_status_notifier_item (version)

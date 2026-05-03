@@ -6,6 +6,7 @@ import XMonad.Hooks.EwmhDesktops (ewmh)
 import XMonad.Hooks.ManageDocks (docks)
 import XMonad.Hooks.TaffybarPagerHints (pagerHints)
 
+main :: IO ()
 main =
   xmonad $
     -- docks allows xmonad to handle taffybar

@@ -8,9 +8,7 @@ module StatusNotifier.Host.Service where
 import Control.Applicative
 import Control.Arrow
 import Control.Concurrent
-import Control.Concurrent.MVar
 import Control.Lens
-import Control.Lens.Tuple
 import Control.Monad
 import Control.Monad.Trans.Class
 import Control.Monad.Trans.Except
@@ -30,7 +28,6 @@ import Data.Maybe
 import Data.String
 import Data.Typeable
 import Data.Unique
-import Data.Word
 import qualified StatusNotifier.Item.Client as I
 import StatusNotifier.Util
 import qualified StatusNotifier.Watcher.Client as W
@@ -67,8 +64,10 @@ data Params = Params
     matchSenderWhenNameOwnersUnmatched :: Bool
   }
 
+hostLogger :: Priority -> String -> IO ()
 hostLogger = logM "StatusNotifier.Host.Service"
 
+defaultParams :: Params
 defaultParams =
   Params
     { dbusClient = Nothing,
@@ -120,6 +119,7 @@ data LogicalDuplicateKey = LogicalDuplicateKey
   }
   deriving (Eq, Show)
 
+supressPixelData :: ItemInfo -> ItemInfo
 supressPixelData info =
   info
     { iconPixmaps = map (\(w, h, _) -> (w, h, "")) $ iconPixmaps info,
@@ -166,6 +166,7 @@ convertPixmapsToHostByteOrder ::
   [(Int32, Int32, BS.ByteString)] -> [(Int32, Int32, BS.ByteString)]
 convertPixmapsToHostByteOrder = map $ over _3 networkToSystemByteOrder
 
+callFromInfo :: (BusName -> ObjectPath -> result) -> ItemInfo -> result
 callFromInfo
   fn
   ItemInfo
@@ -196,7 +197,7 @@ build
     let busName = getBusName namespaceString uniqueID
 
         logError = hostLogger ERROR
-        logErrorWithMessage message error = logError message >> logError (show error)
+        logErrorWithMessage message err = logError message >> logError (show err)
 
         logInfo = hostLogger INFO
         logDebug = hostLogger DEBUG
@@ -216,7 +217,7 @@ build
         doUpdate utype uinfo =
           readMVar updateHandlersVar >>= mapM_ (doUpdateForHandler utype uinfo)
 
-        addHandler handler = do
+        addUpdateHandler_ handler = do
           unique <- newUnique
           modifyMVar_ itemInfoMapVar $ \itemInfoMap -> do
             logInfo $
@@ -233,7 +234,7 @@ build
             return itemInfoMap
           return unique
 
-        removeHandler unique =
+        removeUpdateHandler_ unique =
           modifyMVar_ updateHandlersVar $ \handlers -> do
             let newHandlers = filter ((/= unique) . fst) handlers
             logInfo $
@@ -253,16 +254,15 @@ build
            in (busName_ bus, objectPath_ <$> maybePath)
 
         buildItemInfo name = runExceptT $ do
-          let (busName, maybePath) = parseServiceName name
-          path <- case maybePath of
+          let (itemBusName, maybePath) = parseServiceName name
+          itemPath <- case maybePath of
             Just parsedPath -> return parsedPath
             Nothing ->
               objectPath_
                 <$> ExceptT
-                  (W.getObjectPathForItemName client (coerce busName))
+                  (W.getObjectPathForItemName client (coerce itemBusName))
           let doGetDef def fn =
-                ExceptT $ exemptAll def <$> fn client busName path
-              doGet fn = ExceptT $ fn client busName path
+                ExceptT $ exemptAll def <$> fn client itemBusName itemPath
           pixmaps <- doGetDef [] $ getPixmaps I.getIconPixmap
           iName <- doGetDef name I.getIconName
           overlayPixmap <- doGetDef [] $ getPixmaps I.getOverlayIconPixmap
@@ -277,11 +277,11 @@ build
           itemIsMenu <- doGetDef True I.getItemIsMenu
           return
             ItemInfo
-              { itemServiceName = busName,
+              { itemServiceName = itemBusName,
                 itemId = idString,
                 itemStatus = status,
                 itemCategory = category,
-                itemServicePath = path,
+                itemServicePath = itemPath,
                 itemToolTip = tooltip,
                 iconPixmaps = pixmaps,
                 iconThemePath = themePath,
@@ -302,10 +302,10 @@ build
         registerWithPairs =
           mapM (uncurry clientSignalRegister)
           where
-            logUnableToCallSignal signal =
+            logUnableToCallSignal dbusSignal =
               hostLogger ERROR $
                 printf "Unable to call handler with %s" $
-                  show signal
+                  show dbusSignal
             clientSignalRegister signalRegisterFn handler =
               signalRegisterFn client matchAny handler logUnableToCallSignal
 
@@ -327,18 +327,18 @@ build
                 (addItemInfo itemInfoMap)
           where
             addItemInfo
-              map
+              currentMap
               itemInfo@ItemInfo
                 { itemServiceName = newName,
                   itemServicePath = newPath
                 } =
-                if Map.member newName map
+                if Map.member newName currentMap
                   then do
                     logDebug $
                       printf
                         "Ignoring duplicate ItemAdded for %s because the exact service is already tracked."
                         (coerce newName :: String)
-                    return map
+                    return currentMap
                   else do
                     -- When the watcher restarts, some items may re-register
                     -- under a different bus name (e.g. switching between
@@ -358,7 +358,7 @@ build
                               && logicalDuplicateKey existingInfo == logicalDuplicateKey itemInfo
                         addFresh = do
                           doUpdate ItemAdded itemInfo
-                          pure (Map.insert newName itemInfo map)
+                          pure (Map.insert newName itemInfo currentMap)
                         replaceExisting :: BusName -> ItemInfo -> String -> IO (Map.Map BusName ItemInfo)
                         replaceExisting existingName existingInfo reason = do
                           logInfo $
@@ -371,12 +371,12 @@ build
                           doUpdate ItemAdded itemInfo
                           pure $
                             Map.insert newName itemInfo $
-                              Map.delete existingName map
+                              Map.delete existingName currentMap
                         tryLogicalDuplicateMatch =
                           case logicalDuplicateKey itemInfo of
                             Nothing -> addFresh
                             Just duplicateKey -> do
-                              existing <- findUniqueMatchM matchesLogicalDuplicate (Map.toList map)
+                              existing <- findUniqueMatchM matchesLogicalDuplicate (Map.toList currentMap)
                               case existing of
                                 Just (existingName, existingInfo) ->
                                   replaceExisting
@@ -387,7 +387,7 @@ build
                     case newOwner of
                       Nothing -> tryLogicalDuplicateMatch
                       Just _ -> do
-                        existing <- findM matchesOwnerAndPath (Map.toList map)
+                        existing <- findM matchesOwnerAndPath (Map.toList currentMap)
                         case existing of
                           Nothing -> do
                             logDebug $
@@ -410,14 +410,14 @@ build
           modifyMVar itemInfoMapVar doRemove
             >>= maybe logNonExistentRemoval (doUpdate ItemRemoved)
           where
-            busName = fst (parseServiceName serviceName)
+            itemBusName = fst (parseServiceName serviceName)
             doRemove currentMap =
-              return (Map.delete busName currentMap, Map.lookup busName currentMap)
+              return (Map.delete itemBusName currentMap, Map.lookup itemBusName currentMap)
             logNonExistentRemoval =
               -- This can happen due to watcher/host races (e.g. watcher restart).
               hostLogger DEBUG $
                 printf "Attempt to remove unknown item %s" $
-                  show busName
+                  show itemBusName
 
         watcherRegistrationPairs =
           [ (W.registerForStatusNotifierItemRegistered, const handleItemAdded),
@@ -428,6 +428,7 @@ build
 
         synchronizeItemsWithWatcher = do
           let retryDelayMicros = 50000
+              maxRetries :: Int
               maxRetries = 20
               fetchWatcherItems retries = do
                 watcherItemsResult <- W.getRegisteredStatusNotifierItems client
@@ -456,20 +457,15 @@ build
             logInfo "Watcher owner changed; synchronizing item state."
             synchronizeItemsWithWatcher
 
-        getSender fn s@M.Signal {M.signalSender = Just sender} =
-          -- Signal dumps are too noisy at INFO.
-          logDebug (show s) >> fn sender
-        getSender _ s = logError $ "Received signal with no sender: " ++ show s
-
         runProperty prop serviceName =
           getObjectPathForItemName serviceName >>= prop client serviceName
 
-        logUnknownSender updateType signal =
+        logUnknownSender updateType dbusSignal =
           hostLogger DEBUG $
             printf
               "Got signal for update type: %s from unknown sender: %s"
               (show updateType)
-              (show signal)
+              (show dbusSignal)
 
         identifySender
           M.Signal
@@ -529,24 +525,24 @@ build
               a <||> b = runMaybeT $ MaybeT a <|> MaybeT b
         identifySender _ = return Nothing
 
-        updateItemByLensAndProp lens prop busName = runExceptT $ do
-          newValue <- ExceptT (runProperty prop busName)
+        updateItemByLensAndProp valueLens prop itemBusName = runExceptT $ do
+          newValue <- ExceptT (runProperty prop itemBusName)
           let modify infoMap =
-                case Map.lookup busName infoMap of
+                case Map.lookup itemBusName infoMap of
                   Nothing -> return (infoMap, Nothing)
                   Just oldInfo ->
-                    let newInfo = set lens newValue oldInfo
+                    let newInfo = set valueLens newValue oldInfo
                      in if newInfo == oldInfo
                           then return (infoMap, Just Nothing)
                           else
-                            let newMap = Map.insert busName newInfo infoMap
+                            let newMap = Map.insert itemBusName newInfo infoMap
                              in return (newMap, Just $ Just newInfo)
           ExceptT $
             maybeToEither (methodError (Serial 0) errorFailed)
               <$> modifyMVar itemInfoMapVar modify
 
-        logErrorsHandler lens updateType prop =
-          runUpdaters [updateItemByLensAndProp lens prop] updateType
+        logErrorsHandler valueLens updateType prop =
+          runUpdaters [updateItemByLensAndProp valueLens prop] updateType
 
         -- Run all the provided updaters with the expectation that at least one
         -- will succeed.
@@ -560,12 +556,12 @@ build
               printf "Property update failures %s" $
                 show failures
 
-        runUpdaters updaters updateType signal =
-          identifySender signal >>= maybe runForAll (runUpdateForService . itemServiceName)
+        runUpdaters updaters updateType dbusSignal =
+          identifySender dbusSignal >>= maybe runForAll (runUpdateForService . itemServiceName)
           where
             runUpdateForService = runUpdatersForService updaters updateType
             runForAll =
-              logUnknownSender updateType signal
+              logUnknownSender updateType dbusSignal
                 >> readMVar itemInfoMapVar
                 >>= mapM_ runUpdateForService . Map.keys
 
@@ -578,17 +574,17 @@ build
         updateIconTheme =
           updateItemByLensAndProp iconThemePathL getThemePathDefault
 
-        updateFromIconThemeFromSignal signal =
-          identifySender signal >>= traverse (updateIconTheme . itemServiceName)
+        updateFromIconThemeFromSignal dbusSignal =
+          identifySender dbusSignal >>= traverse (updateIconTheme . itemServiceName)
 
-        handleNewIcon signal = do
+        handleNewIcon dbusSignal = do
           -- XXX: This avoids the case where the theme path is updated before the
           -- icon name is updated when both signals are sent simultaneously
-          updateFromIconThemeFromSignal signal
+          _ <- updateFromIconThemeFromSignal dbusSignal
           runUpdaters
             [updateIconPixmaps, updateIconName]
             IconUpdated
-            signal
+            dbusSignal
 
         updateOverlayIconName =
           updateItemByLensAndProp overlayIconNameL $
@@ -598,15 +594,15 @@ build
           updateItemByLensAndProp overlayIconPixmapsL $
             getPixmaps I.getOverlayIconPixmap
 
-        handleNewOverlayIcon signal = do
-          updateFromIconThemeFromSignal signal
+        handleNewOverlayIcon dbusSignal = do
+          _ <- updateFromIconThemeFromSignal dbusSignal
           runUpdaters
             [updateOverlayIconPixmaps, updateOverlayIconName]
             OverlayIconUpdated
-            signal
+            dbusSignal
 
-        getThemePathDefault client busName objectPath =
-          right Just <$> I.getIconThemePath client busName objectPath
+        getThemePathDefault dbusClient itemBusName objectPath =
+          right Just <$> I.getIconThemePath dbusClient itemBusName objectPath
 
         handleNewTitle =
           logErrorsHandler iconTitleL TitleUpdated I.getTitle
@@ -639,10 +635,10 @@ build
               shutdownHost = do
                 logInfo "Shutting down StatusNotifierHost"
                 unregisterAll
-                releaseName client (fromString busName)
+                _ <- releaseName client (fromString busName)
                 return ()
-              logErrorAndShutdown error =
-                logError (show error) >> shutdownHost >> return (Map.empty, False)
+              logErrorAndShutdown err =
+                logError (show err) >> shutdownHost >> return (Map.empty, False)
               finishInitialization serviceNames = do
                 itemInfos <- createAll serviceNames
                 let newMap = Map.fromList $ map (itemServiceName &&& id) itemInfos
@@ -673,8 +669,8 @@ build
               Just
                 Host
                   { itemInfoMap = readMVar itemInfoMapVar,
-                    addUpdateHandler = addHandler,
-                    removeUpdateHandler = removeHandler,
+                    addUpdateHandler = addUpdateHandler_,
+                    removeUpdateHandler = removeUpdateHandler_,
                     forceUpdate = handleItemAdded . coerce
                   }
             else Nothing
