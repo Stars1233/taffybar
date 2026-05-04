@@ -50,6 +50,7 @@ import Control.Concurrent.STM.TChan (TChan)
 import Control.Monad (foldM, forM_, guard, when)
 import Control.Monad.IO.Class (MonadIO (..))
 import Control.Monad.Trans.Reader (ask, asks, runReaderT)
+import Data.Char (toLower)
 import Data.Default (Default (..))
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.Int (Int32)
@@ -61,6 +62,9 @@ import qualified GI.Gdk.Enums as Gdk
 import qualified GI.Gdk.Structs.EventScroll as Gdk
 import qualified GI.GdkPixbuf.Objects.Pixbuf as Gdk
 import qualified GI.Gtk as Gtk
+import System.Environment (lookupEnv)
+import System.IO (hFlush, stdout)
+import System.Posix.Process (getProcessID)
 import System.Taffybar.Context (Backend (..), TaffyIO, backend)
 import System.Taffybar.Information.EWMHDesktopInfo
   ( ewmhWMIcon,
@@ -112,13 +116,13 @@ import System.Taffybar.Widget.Util
     mkWindowIconWidgetBase,
     syncWidgetPool,
     updateWidgetClasses,
-    updateWindowIconWidgetState,
     widgetSetClassGI,
     windowStatusClassFromFlags,
   )
 import System.Taffybar.WindowIcon
   ( pixBufFromColor,
   )
+import Text.Printf (printf)
 
 data WorkspaceWidgetController = WorkspaceWidgetController
   { controllerWidget :: Gtk.Widget,
@@ -165,6 +169,25 @@ setWorkspaceWidgetStatusClass ws widget =
     widget
     [getCSSClass ws]
     cssWorkspaceStates
+
+workspaceDebugEnabled :: IO Bool
+workspaceDebugEnabled = do
+  value <- lookupEnv "TAFFYBAR_WORKSPACE_DEBUG"
+  pure $
+    case fmap (map toLower) value of
+      Just "1" -> True
+      Just "true" -> True
+      Just "yes" -> True
+      Just "on" -> True
+      _ -> False
+
+workspaceDebugLog :: (MonadIO m) => String -> m ()
+workspaceDebugLog message = liftIO $ do
+  enabled <- workspaceDebugEnabled
+  when enabled $ do
+    pid <- getProcessID
+    putStrLn $ "taffybar-workspaces pid=" <> show pid <> " " <> message
+    hFlush stdout
 
 -- | Build the common overlay layout used by workspace widgets:
 -- window icons are the base content and the workspace label is overlaid in the
@@ -284,6 +307,8 @@ defaultWidgetBuilder cfg wsInfo = do
         liftIO $ writeIORef wsRef newWs
         labelText <- labelSetter cfg newWs
         let wsState = toCSSState cfg newWs
+            windowsChanged = workspaceWindows oldWs /= workspaceWindows newWs
+            wsIdentity = workspaceIdentity newWs
         liftIO $ Gtk.labelSetMarkup label (T.pack labelText)
         setWorkspaceWidgetStatusClass wsState contents
         setWorkspaceWidgetStatusClass wsState label
@@ -291,7 +316,16 @@ defaultWidgetBuilder cfg wsInfo = do
         let needsIconUpdate =
               forceIcons
                 || null currentIcons
-                || workspaceWindows oldWs /= workspaceWindows newWs
+                || windowsChanged
+        workspaceDebugLog $
+          printf
+            "controller-update workspace=%s state=%s forceIcons=%s windowsChanged=%s iconWidgets=%d needsIconUpdate=%s"
+            (show wsIdentity)
+            (show $ workspaceState newWs)
+            (show forceIcons)
+            (show windowsChanged)
+            (length currentIcons)
+            (show needsIconUpdate)
         updatedIcons <-
           if needsIconUpdate
             then updateWorkspaceIcons cfg wsRef iconsBox currentIcons newWs
@@ -369,11 +403,28 @@ updateCache cfg cont cacheVar snapshot oldCache = do
           else liftIO $ Gtk.widgetHide (entryButton entry)
   if workspaces == cacheLastWorkspaces oldCache && not forceIconRefresh
     then do
+      workspaceDebugLog $
+        printf
+          "cache-skip backend=%s revision=%d workspaces=%d"
+          (show $ snapshotBackend snapshot)
+          (snapshotRevision snapshot)
+          (length workspaces)
       forM_ (M.elems $ cacheEntries oldCache) $ \entry ->
         applyVisibility (entryLastWorkspace entry) entry
       return oldCache
     else do
       let oldEntries = cacheEntries oldCache
+          oldWorkspaceById =
+            M.fromList
+              [ (workspaceIdentity wsInfo, wsInfo)
+              | wsInfo <- cacheLastWorkspaces oldCache
+              ]
+          changedIds =
+            [ wsKey
+            | wsInfo <- workspaces,
+              let wsKey = workspaceIdentity wsInfo,
+              M.lookup wsKey oldWorkspaceById /= Just wsInfo
+            ]
           buildOrUpdate (cacheAcc, entriesAcc) wsInfo = do
             let wsKey = workspaceIdentity wsInfo
             entry <-
@@ -401,6 +452,17 @@ updateCache cfg cont cacheVar snapshot oldCache = do
             desiredOrder /= cacheOrder oldCache
               || not (M.null added)
               || not (M.null removed)
+      workspaceDebugLog $
+        printf
+          "cache-update backend=%s revision=%d workspaces=%d changed=%d added=%d removed=%d reorder=%s forceIconRefresh=%s"
+          (show $ snapshotBackend snapshot)
+          (snapshotRevision snapshot)
+          (length workspaces)
+          (length changedIds)
+          (M.size added)
+          (M.size removed)
+          (show needsReorder)
+          (show forceIconRefresh)
       when needsReorder $
         forM_ (zip [0 :: Int ..] orderedEntries) $ \(position, (_wsInfo, entry)) ->
           liftIO $ Gtk.boxReorderChild cont (entryWrapper entry) (fromIntegral position)
@@ -550,12 +612,32 @@ buildIconWidget cfg workspaceRef transparentOnNone = do
   return iconWidget
 
 updateIconWidget :: WindowIconWidget WindowInfo -> Maybe WindowInfo -> TaffyIO ()
-updateIconWidget iconWidget windowData =
-  updateWindowIconWidgetState
-    iconWidget
-    windowData
-    windowTitle
-    getWindowStatusString
+updateIconWidget iconWidget windowData = do
+  oldWindowData <- liftIO $ MV.swapMVar (iconWindow iconWidget) windowData
+  Gtk.widgetSetTooltipText (iconContainer iconWidget) (windowTitle <$> windowData)
+  let pixbufKeyChanged =
+        (windowIconPixbufKey <$> oldWindowData) /= (windowIconPixbufKey <$> windowData)
+  workspaceDebugLog $
+    printf
+      "icon-update old=%s new=%s pixbufKeyChanged=%s"
+      (show $ windowIdentity <$> oldWindowData)
+      (show $ windowIdentity <$> windowData)
+      (show pixbufKeyChanged)
+  when pixbufKeyChanged $
+    liftIO $
+      iconForceUpdate iconWidget
+  let statusString = maybe "inactive" getWindowStatusString windowData
+  updateWidgetClasses
+    (iconContainer iconWidget)
+    [statusString]
+    windowIconStatusClasses
+
+windowIconPixbufKey :: WindowInfo -> (WindowIdentity, [T.Text])
+windowIconPixbufKey windowInfo =
+  (windowIdentity windowInfo, windowClassHints windowInfo)
+
+windowIconStatusClasses :: [T.Text]
+windowIconStatusClasses = ["active", "urgent", "minimized", "normal", "inactive"]
 
 getWindowStatusString :: WindowInfo -> T.Text
 getWindowStatusString windowInfo =

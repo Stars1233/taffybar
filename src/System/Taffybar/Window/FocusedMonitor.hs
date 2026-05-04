@@ -20,17 +20,22 @@ module System.Taffybar.Window.FocusedMonitor
   )
 where
 
-import Control.Concurrent (forkIO, killThread)
-import Control.Concurrent.STM.TChan (TChan, readTChan)
+import Control.Concurrent (forkIO, killThread, threadDelay)
+import Control.Concurrent.STM.TChan (TChan, readTChan, tryReadTChan)
 import Control.Monad (forever, when)
 import Control.Monad.STM (atomically)
+import Data.Char (toLower)
 import Data.Int (Int32)
 import qualified Data.Text as T
 import Data.Unique (Unique)
 import qualified GI.Gdk as Gdk
 import qualified GI.Gtk as Gtk
+import System.Environment (lookupEnv)
+import System.IO (hFlush, stdout)
+import System.Posix.Process (getProcessID)
 import System.Taffybar.Util (postGUIASync)
 import System.Taffybar.Widget.Util (updateWidgetClasses)
+import Text.Printf (printf)
 
 data FocusedMonitorHooks
   = FocusedMonitorHooksX11
@@ -49,6 +54,25 @@ focusedMonitorClasses = ["focused-monitor", "unfocused-monitor"]
 focusedMonitorClass :: Bool -> T.Text
 focusedMonitorClass True = "focused-monitor"
 focusedMonitorClass False = "unfocused-monitor"
+
+focusedMonitorDebugEnabled :: IO Bool
+focusedMonitorDebugEnabled = do
+  value <- lookupEnv "TAFFYBAR_FOCUSED_MONITOR_DEBUG"
+  pure $
+    case fmap (map toLower) value of
+      Just "1" -> True
+      Just "true" -> True
+      Just "yes" -> True
+      Just "on" -> True
+      _ -> False
+
+focusedMonitorDebugLog :: String -> IO ()
+focusedMonitorDebugLog message = do
+  enabled <- focusedMonitorDebugEnabled
+  when enabled $ do
+    pid <- getProcessID
+    putStrLn $ "taffybar-focused-monitor pid=" <> show pid <> " " <> message
+    hFlush stdout
 
 getBarMonitor :: Gtk.Window -> Maybe Int32 -> IO (Maybe Gdk.Monitor)
 getBarMonitor window maybeMonitorNumber = do
@@ -79,6 +103,11 @@ updateFocusedMonitorClass resolveFocusedMonitor window maybeBarMonitorNumber = d
     (Just focusedMonitor, Just barMonitor) ->
       monitorsMatch focusedMonitor barMonitor
     _ -> return False
+  focusedMonitorDebugLog $
+    printf
+      "class-update isFocused=%s targetClass=%s"
+      (show isFocused)
+      (T.unpack $ focusedMonitorClass isFocused)
   updateWidgetClasses
     window
     [focusedMonitorClass isFocused]
@@ -125,9 +154,21 @@ setupFocusedMonitorClassUpdates hooks window maybeBarMonitorNumber = do
       { getFocusedMonitorHyprlandEvents = getEvents
       } -> do
         events <- getEvents
+        let collectPendingRelevantEvents = do
+              maybeEventLine <- tryReadTChan events
+              case maybeEventLine of
+                Nothing -> return []
+                Just eventLine ->
+                  if isRelevantFocusedMonitorHyprlandEvent eventLine
+                    then (eventLine :) <$> collectPendingRelevantEvents
+                    else collectPendingRelevantEvents
         tid <- forkIO $ forever $ do
           eventLine <- atomically $ readTChan events
-          when (isRelevantFocusedMonitorHyprlandEvent eventLine) refresh
+          when (isRelevantFocusedMonitorHyprlandEvent eventLine) $ do
+            threadDelay 25_000
+            eventLines <- atomically $ (eventLine :) <$> collectPendingRelevantEvents
+            mapM_ (focusedMonitorDebugLog . ("event " <>) . T.unpack) eventLines
+            refresh
         _ <- Gtk.onWidgetUnrealize window $ killThread tid
         return ()
   refresh

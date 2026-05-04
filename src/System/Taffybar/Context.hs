@@ -109,8 +109,9 @@ import Graphics.UI.GIGtkStrut
 import StatusNotifier.TransparentWindow
 import System.Environment (getArgs, getExecutablePath, lookupEnv)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess))
+import System.IO (hFlush, stdout)
 import System.Log.Logger (Priority (..), logM)
-import System.Posix.Process (exitImmediately)
+import System.Posix.Process (exitImmediately, getProcessID)
 import System.Process
   ( CreateProcess (close_fds, new_session, std_err, std_in, std_out),
     StdStream (NoStream),
@@ -151,6 +152,29 @@ import Unsafe.Coerce
 
 logIO :: Priority -> String -> IO ()
 logIO = logM "System.Taffybar.Context"
+
+drawDebugEnabled :: IO Bool
+drawDebugEnabled = do
+  value <- lookupEnv "TAFFYBAR_DRAW_DEBUG"
+  pure $
+    case fmap (map toLower) value of
+      Just "1" -> True
+      Just "true" -> True
+      Just "yes" -> True
+      Just "on" -> True
+      _ -> False
+
+attachTopLevelDrawProbe :: (Gtk.IsWidget widget) => String -> widget -> IO ()
+attachTopLevelDrawProbe name widget = do
+  counter <- newIORef (0 :: Int)
+  pid <- getProcessID
+  void $
+    Gtk.onWidgetDraw widget $ \_ -> do
+      count <- (+ 1) <$> readIORef counter
+      writeIORef counter count
+      putStrLn $ "taffybar-draw pid=" <> show pid <> " widget=" <> name <> " count=" <> show count
+      hFlush stdout
+      pure False
 
 logC :: (MonadIO m) => Priority -> String -> m ()
 logC p = liftIO . logIO p
@@ -350,18 +374,22 @@ buildContextWithBackend
               backend = backendType,
               contextBarConfig = Nothing
             }
-    _ <-
-      runMaybeT $
-        MaybeT GI.Gdk.displayGetDefault
-          >>= (lift . GI.Gdk.displayGetDefaultScreen)
-          >>= ( lift
-                  . flip
-                    GI.Gdk.afterScreenMonitorsChanged
-                    -- XXX: We have to do a force refresh here because there is no
-                    -- way to reliably move windows, since the window manager can do
-                    -- whatever it pleases.
-                    (runReaderT forceRefreshTaffyWindows context)
-              )
+    when (backendType == BackendX11) $
+      void $
+        runMaybeT $
+          MaybeT GI.Gdk.displayGetDefault
+            >>= (lift . GI.Gdk.displayGetDefaultScreen)
+            >>= ( lift
+                    . flip
+                      GI.Gdk.afterScreenMonitorsChanged
+                      -- XXX: We have to do a force refresh here because there is no
+                      -- way to reliably move windows, since the window manager can do
+                      -- whatever it pleases.
+                      ( runReaderT
+                          (forceRefreshTaffyWindowsBecause "gdk screen monitors changed")
+                          context
+                      )
+                )
 
     -- Some compositors/backends will keep the reserved space for a layer-shell
     -- surface/strut window after suspend, but fail to properly re-display the
@@ -406,7 +434,10 @@ registerResumeRefresh ctx = do
           threadDelay 1_000_000
           _ <- MV.swapMVar pendingVar False
           logIO NOTICE "Resumed from sleep - forcing taffybar window refresh"
-          postGUIASync $ runReaderT forceRefreshTaffyWindows ctx
+          postGUIASync $
+            runReaderT
+              (forceRefreshTaffyWindowsBecause "logind resume")
+              ctx
 
       callback :: D.Signal -> IO ()
       callback sig =
@@ -443,7 +474,8 @@ registerHyprlandReconnectRefresh ctx = do
   eventChan <- withHyprlandEventChan ctx
   events <- subscribeHyprlandEvents eventChan
   readyVar <- MV.newMVar False
-  pendingVar <- MV.newMVar False
+  recoveryPendingVar <- MV.newMVar False
+  monitorRefreshPendingVar <- MV.newMVar False
   void $ forkIO $ do
     -- The event reader also emits a connection event during normal startup.
     -- Ignore early connection events so startup does not immediately rebuild
@@ -460,19 +492,44 @@ registerHyprlandReconnectRefresh ctx = do
               then Just hyprlandEventName
               else Nothing
 
+      monitorEventName line =
+        let hyprlandEventName = T.takeWhile (/= '>') line
+         in if hyprlandEventName
+              `elem` [ "monitoradded",
+                       "monitorremoved"
+                     ]
+              then Just hyprlandEventName
+              else Nothing
+
       scheduleProcessRecovery reason = do
-        wasPending <- MV.swapMVar pendingVar True
+        wasPending <- MV.swapMVar recoveryPendingVar True
         unless wasPending $ void $ forkIO $ do
           -- Give Hyprland/GDK a short settling window before rebuilding
           -- layer-shell surfaces.
           threadDelay 1_000_000
-          _ <- MV.swapMVar pendingVar False
+          _ <- MV.swapMVar recoveryPendingVar False
           action <- hyprlandReconnectAction
           case action of
             "refresh" -> do
               logIO NOTICE $ "Hyprland " ++ reason ++ " - forcing taffybar window refresh"
-              postGUIASync $ runReaderT forceRefreshTaffyWindows ctx
+              postGUIASync $
+                runReaderT
+                  (forceRefreshTaffyWindowsBecause $ "hyprland " ++ reason)
+                  ctx
             _ -> restartTaffybarProcess ctx reason
+
+      scheduleMonitorRefresh reason = do
+        wasPending <- MV.swapMVar monitorRefreshPendingVar True
+        unless wasPending $ void $ forkIO $ do
+          -- Output topology updates can arrive in small batches; wait briefly
+          -- so bar configs are rebuilt against the settled monitor list.
+          threadDelay 500_000
+          _ <- MV.swapMVar monitorRefreshPendingVar False
+          logIO NOTICE $ "Hyprland " ++ reason ++ " - forcing taffybar window refresh"
+          postGUIASync $
+            runReaderT
+              (forceRefreshTaffyWindowsBecause $ "hyprland " ++ reason)
+              ctx
 
       handleLifecycleEvent hyprlandEventName = do
         ready <- MV.readMVar readyVar
@@ -483,9 +540,16 @@ registerHyprlandReconnectRefresh ctx = do
               else scheduleProcessRecovery "event socket reconnected"
           else logIO DEBUG "Ignoring Hyprland event socket connection during startup"
 
+      handleMonitorEvent hyprlandEventName = do
+        ready <- MV.readMVar readyVar
+        if ready
+          then scheduleMonitorRefresh $ T.unpack hyprlandEventName
+          else logIO DEBUG "Ignoring Hyprland monitor event during startup"
+
   void $ forkIO $ forever $ do
     line <- atomically $ readTChan events
     maybe (pure ()) handleLifecycleEvent (lifecycleEventName line)
+    maybe (pure ()) handleMonitorEvent (monitorEventName line)
 
 hyprlandReconnectAction :: IO String
 hyprlandReconnectAction = do
@@ -634,16 +698,25 @@ getHyprlandFocusedMonitorEvents context = do
 buildBarWindow :: Context -> BarConfig -> IO Gtk.Window
 buildBarWindow context barConfig = do
   let thisContext = context {contextBarConfig = Just barConfig}
+  debugDraw <- drawDebugEnabled
+  pid <- getProcessID
   logC INFO $
     printf
       "Building window for Taffybar(id=%s) with %s"
       (showBarId barConfig)
       (show $ strutConfig barConfig)
+  when debugDraw $ do
+    putStrLn $ "taffybar-window pid=" <> show pid <> " build " <> show (showBarId barConfig)
+    hFlush stdout
 
   window <- Gtk.windowNew Gtk.WindowTypeToplevel
+  when debugDraw $ attachTopLevelDrawProbe "taffy-window" window
 
   void $ Gtk.onWidgetDestroy window $ do
     let bId = showBarId barConfig
+    when debugDraw $ do
+      putStrLn $ "taffybar-window pid=" <> show pid <> " destroy " <> show bId
+      hFlush stdout
     logC INFO $ printf "Window for Taffybar(id=%s) destroyed" bId
     MV.modifyMVar_ (existingWindows context) (pure . filter ((/=) window . sel2))
     logC DEBUG $ printf "Window for Taffybar(id=%s) unregistered" bId
@@ -812,6 +885,11 @@ buildBarWindow context barConfig = do
 refreshTaffyWindows :: TaffyIO ()
 refreshTaffyWindows = mapReaderT postGUIASync $ do
   logC DEBUG "Refreshing windows"
+  debugDraw <- liftIO drawDebugEnabled
+  when debugDraw $ liftIO $ do
+    pid <- getProcessID
+    putStrLn $ "taffybar-window pid=" <> show pid <> " refreshTaffyWindows"
+    hFlush stdout
   ctx <- ask
   windowsVar <- asks existingWindows
 
@@ -880,10 +958,19 @@ removeTaffyWindows = asks existingWindows >>= liftIO . MV.readMVar >>= deleteWin
     del :: Gtk.Window -> TaffyIO ()
     del = Gtk.widgetDestroy
 
--- | Forcibly refresh taffybar windows, even if there are existing windows that
--- correspond to the uniques in the bar configs yielded by 'barConfigGetter'.
-forceRefreshTaffyWindows :: TaffyIO ()
-forceRefreshTaffyWindows = removeTaffyWindows >> refreshTaffyWindows
+-- | Forcibly refresh taffybar windows with a debug-visible caller reason.
+forceRefreshTaffyWindowsBecause :: String -> TaffyIO ()
+forceRefreshTaffyWindowsBecause reason = do
+  debugDraw <- liftIO drawDebugEnabled
+  when debugDraw $ liftIO $ do
+    pid <- getProcessID
+    putStrLn $
+      "taffybar-window pid="
+        <> show pid
+        <> " forceRefreshTaffyWindows reason="
+        <> show reason
+    hFlush stdout
+  removeTaffyWindows >> refreshTaffyWindows
 
 -- | Destroys all top-level windows belonging to Taffybar, then
 -- requests the GTK main loop to exit.

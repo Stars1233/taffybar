@@ -33,25 +33,31 @@ module System.Taffybar.Information.Workspaces.Hyprland
 where
 
 import Control.Applicative ((<|>))
+import Control.Concurrent (threadDelay)
 import Control.Concurrent.MVar
-import Control.Concurrent.STM.TChan
+import Control.Concurrent.STM.TChan (TChan, newBroadcastTChanIO, readTChan, tryReadTChan, writeTChan)
 import Control.Exception.Enclosed (catchAny)
 import Control.Monad (forever, when)
 import Control.Monad.IO.Class (MonadIO (..))
 import Control.Monad.STM (atomically)
+import Data.Char (toLower)
 import Data.Either (isRight)
 import qualified Data.Foldable as F
 import Data.List (sortOn)
 import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes, fromMaybe, listToMaybe)
 import qualified Data.Text as T
+import System.Environment (lookupEnv)
+import System.IO (hFlush, stdout)
 import System.Log.Logger (Priority (..), logM)
+import System.Posix.Process (getProcessID)
 import System.Taffybar.Context (TaffyIO, getStateDefault, taffyFork)
 import System.Taffybar.Hyprland (getHyprlandClient, getHyprlandEventChan)
 import qualified System.Taffybar.Information.Hyprland as Hypr
 import qualified System.Taffybar.Information.Hyprland.API as HyprAPI
 import qualified System.Taffybar.Information.Hyprland.Types as HyprTypes
 import System.Taffybar.Information.Workspaces.Model
+import Text.Printf (printf)
 
 data HyprlandWorkspaceProviderConfig = HyprlandWorkspaceProviderConfig
   { workspaceSnapshotGetter :: TaffyIO (Bool, [WorkspaceInfo]),
@@ -80,6 +86,25 @@ newtype HyprlandWorkspaceStateChanVar
 
 wLog :: (MonadIO m) => Priority -> String -> m ()
 wLog level msg = liftIO $ logM "System.Taffybar.Information.Workspaces.Hyprland" level msg
+
+debugEnabled :: IO Bool
+debugEnabled = do
+  value <- lookupEnv "TAFFYBAR_WORKSPACE_DEBUG"
+  pure $
+    case fmap (map toLower) value of
+      Just "1" -> True
+      Just "true" -> True
+      Just "yes" -> True
+      Just "on" -> True
+      _ -> False
+
+debugLog :: (MonadIO m) => String -> m ()
+debugLog message = liftIO $ do
+  enabled <- debugEnabled
+  when enabled $ do
+    pid <- getProcessID
+    putStrLn $ "taffybar-hypr-workspaces pid=" <> show pid <> " " <> message
+    hFlush stdout
 
 -- | Parse Hyprland event-socket lines and determine whether workspace state
 -- should be refreshed.
@@ -186,9 +211,20 @@ hyprlandWorkspaceStateLoop cfg stateChan workspaceEventChan var = do
   refreshHyprlandWorkspaceState cfg stateChan workspaceEventChan var
   hyprlandEventChan <- getHyprlandEventChan
   events <- liftIO $ Hypr.subscribeHyprlandEvents hyprlandEventChan
+  let collectPendingRelevantEvents = do
+        maybeLine <- tryReadTChan events
+        case maybeLine of
+          Nothing -> return []
+          Just line ->
+            if workspaceEventFilter cfg line
+              then (line :) <$> collectPendingRelevantEvents
+              else collectPendingRelevantEvents
   forever $ do
     line <- liftIO $ atomically $ readTChan events
-    when (workspaceEventFilter cfg line) $
+    when (workspaceEventFilter cfg line) $ do
+      liftIO $ threadDelay 25_000
+      eventLines <- liftIO $ atomically $ (line :) <$> collectPendingRelevantEvents
+      mapM_ (debugLog . ("event " <>) . T.unpack) eventLines
       refreshHyprlandWorkspaceState cfg stateChan workspaceEventChan var
 
 refreshHyprlandWorkspaceState ::
@@ -218,6 +254,13 @@ refreshHyprlandWorkspaceState cfg stateChan workspaceEventChan var = do
             eventBatchWindowDataComplete = snapshotWindowDataComplete next,
             eventBatchEvents = diffWorkspaceSnapshots previous next
           }
+  debugLog $
+    printf
+      "refresh revision=%d complete=%s workspaces=%d events=%d"
+      (snapshotRevision next)
+      (show complete)
+      (length workspaces)
+      (length $ eventBatchEvents eventBatch)
   liftIO $ do
     _ <- swapMVar var next
     atomically $ do
