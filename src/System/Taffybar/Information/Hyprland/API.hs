@@ -111,9 +111,9 @@ mkHyprlandAddress t
   | otherwise = Right $ HyprlandAddress t
 
 data HyprlandDispatch
-  = -- | @hyprctl dispatch workspace <name-or-id>@
+  = -- | @hyprctl dispatch 'hl.dsp.focus({ workspace = "<name-or-id>" })'@
     DispatchWorkspace HyprlandWorkspaceTarget
-  | -- | @hyprctl dispatch focuswindow address:<addr>@
+  | -- | @hyprctl dispatch 'hl.dsp.focus({ window = "address:<addr>" })'@
     DispatchFocusWindowAddress HyprlandAddress
   deriving (Show, Eq)
 
@@ -124,6 +124,26 @@ dispatchHyprland client action =
 dispatchToArgs :: HyprlandDispatch -> [String]
 dispatchToArgs action =
   case action of
-    DispatchWorkspace ws -> ["dispatch", "workspace", T.unpack (hyprlandWorkspaceTargetText ws)]
+    DispatchWorkspace ws ->
+      [ "dispatch",
+        "hl.dsp.focus({ workspace = "
+          <> luaString (hyprlandWorkspaceTargetText ws)
+          <> " })"
+      ]
     DispatchFocusWindowAddress addr ->
-      ["dispatch", "focuswindow", "address:" <> T.unpack (hyprlandAddressText addr)]
+      [ "dispatch",
+        "hl.dsp.focus({ window = "
+          <> luaString ("address:" <> hyprlandAddressText addr)
+          <> " })"
+      ]
+
+luaString :: Text -> String
+luaString text =
+  "\"" <> concatMap escapeChar (T.unpack text) <> "\""
+  where
+    escapeChar '"' = "\\\""
+    escapeChar '\\' = "\\\\"
+    escapeChar '\n' = "\\n"
+    escapeChar '\r' = "\\r"
+    escapeChar '\t' = "\\t"
+    escapeChar c = [c]
