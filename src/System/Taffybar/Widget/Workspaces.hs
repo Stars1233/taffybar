@@ -563,6 +563,17 @@ switchWorkspaceRelative cfg cacheVar wsRef moveBackward = do
       onWorkspaceClick cfg targetWorkspace
       return True
 
+activateWorkspaceIcon ::
+  WorkspacesConfig ->
+  WorkspaceInfo ->
+  Maybe WindowInfo ->
+  TaffyIO ()
+activateWorkspaceIcon cfg currentWs maybeWindow = do
+  backendType <- asks backend
+  case (backendType, maybeWindow) of
+    (BackendX11, Just windowInfo) -> onWindowClick cfg windowInfo
+    _ -> onWorkspaceClick cfg currentWs
+
 updateWorkspaceIcons ::
   WorkspacesConfig ->
   IORef WorkspaceInfo ->
@@ -603,11 +614,8 @@ buildIconWidget cfg workspaceRef transparentOnNone = do
       Gtk.onWidgetButtonPressEvent (iconContainer iconWidget) $
         const $ do
           maybeWindow <- MV.readMVar (iconWindow iconWidget)
-          case maybeWindow of
-            Just windowInfo -> runReaderT (onWindowClick cfg windowInfo) ctx
-            Nothing -> do
-              currentWs <- readIORef workspaceRef
-              runReaderT (onWorkspaceClick cfg currentWs) ctx
+          currentWs <- readIORef workspaceRef
+          runReaderT (activateWorkspaceIcon cfg currentWs maybeWindow) ctx
           return True
   return iconWidget
 
