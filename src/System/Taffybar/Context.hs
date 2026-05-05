@@ -109,9 +109,8 @@ import Graphics.UI.GIGtkStrut
 import StatusNotifier.TransparentWindow
 import System.Environment (getArgs, getExecutablePath, lookupEnv)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess))
-import System.IO (hFlush, stdout)
 import System.Log.Logger (Priority (..), logM)
-import System.Posix.Process (exitImmediately, getProcessID)
+import System.Posix.Process (exitImmediately)
 import System.Process
   ( CreateProcess (close_fds, new_session, std_err, std_in, std_out),
     StdStream (NoStream),
@@ -152,29 +151,6 @@ import Unsafe.Coerce
 
 logIO :: Priority -> String -> IO ()
 logIO = logM "System.Taffybar.Context"
-
-drawDebugEnabled :: IO Bool
-drawDebugEnabled = do
-  value <- lookupEnv "TAFFYBAR_DRAW_DEBUG"
-  pure $
-    case fmap (map toLower) value of
-      Just "1" -> True
-      Just "true" -> True
-      Just "yes" -> True
-      Just "on" -> True
-      _ -> False
-
-attachTopLevelDrawProbe :: (Gtk.IsWidget widget) => String -> widget -> IO ()
-attachTopLevelDrawProbe name widget = do
-  counter <- newIORef (0 :: Int)
-  pid <- getProcessID
-  void $
-    Gtk.onWidgetDraw widget $ \_ -> do
-      count <- (+ 1) <$> readIORef counter
-      writeIORef counter count
-      putStrLn $ "taffybar-draw pid=" <> show pid <> " widget=" <> name <> " count=" <> show count
-      hFlush stdout
-      pure False
 
 logC :: (MonadIO m) => Priority -> String -> m ()
 logC p = liftIO . logIO p
@@ -698,25 +674,16 @@ getHyprlandFocusedMonitorEvents context = do
 buildBarWindow :: Context -> BarConfig -> IO Gtk.Window
 buildBarWindow context barConfig = do
   let thisContext = context {contextBarConfig = Just barConfig}
-  debugDraw <- drawDebugEnabled
-  pid <- getProcessID
   logC INFO $
     printf
       "Building window for Taffybar(id=%s) with %s"
       (showBarId barConfig)
       (show $ strutConfig barConfig)
-  when debugDraw $ do
-    putStrLn $ "taffybar-window pid=" <> show pid <> " build " <> show (showBarId barConfig)
-    hFlush stdout
 
   window <- Gtk.windowNew Gtk.WindowTypeToplevel
-  when debugDraw $ attachTopLevelDrawProbe "taffy-window" window
 
   void $ Gtk.onWidgetDestroy window $ do
     let bId = showBarId barConfig
-    when debugDraw $ do
-      putStrLn $ "taffybar-window pid=" <> show pid <> " destroy " <> show bId
-      hFlush stdout
     logC INFO $ printf "Window for Taffybar(id=%s) destroyed" bId
     MV.modifyMVar_ (existingWindows context) (pure . filter ((/=) window . sel2))
     logC DEBUG $ printf "Window for Taffybar(id=%s) unregistered" bId
@@ -885,11 +852,6 @@ buildBarWindow context barConfig = do
 refreshTaffyWindows :: TaffyIO ()
 refreshTaffyWindows = mapReaderT postGUIASync $ do
   logC DEBUG "Refreshing windows"
-  debugDraw <- liftIO drawDebugEnabled
-  when debugDraw $ liftIO $ do
-    pid <- getProcessID
-    putStrLn $ "taffybar-window pid=" <> show pid <> " refreshTaffyWindows"
-    hFlush stdout
   ctx <- ask
   windowsVar <- asks existingWindows
 
@@ -958,18 +920,9 @@ removeTaffyWindows = asks existingWindows >>= liftIO . MV.readMVar >>= deleteWin
     del :: Gtk.Window -> TaffyIO ()
     del = Gtk.widgetDestroy
 
--- | Forcibly refresh taffybar windows with a debug-visible caller reason.
+-- | Forcibly refresh taffybar windows.
 forceRefreshTaffyWindowsBecause :: String -> TaffyIO ()
-forceRefreshTaffyWindowsBecause reason = do
-  debugDraw <- liftIO drawDebugEnabled
-  when debugDraw $ liftIO $ do
-    pid <- getProcessID
-    putStrLn $
-      "taffybar-window pid="
-        <> show pid
-        <> " forceRefreshTaffyWindows reason="
-        <> show reason
-    hFlush stdout
+forceRefreshTaffyWindowsBecause _reason = do
   removeTaffyWindows >> refreshTaffyWindows
 
 -- | Destroys all top-level windows belonging to Taffybar, then

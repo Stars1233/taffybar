@@ -37,7 +37,6 @@ import Control.Monad.Trans.Maybe
 import Data.Char (toLower)
 import Data.List
 import Data.Maybe
-import qualified Debug.Trace as D
 import GHC.IO.Encoding
 import Safe (headMay)
 import System.Directory
@@ -194,7 +193,7 @@ parseConditions key elt = case findChild (unqual key) elt of
             mapMaybe parseSingleItem $
               elChildren e
       "Not" -> Not <$> (parseSingleItem =<< listToMaybe (elChildren e))
-      unknown -> D.trace ("Unknown Condition item: " ++ unknown) Nothing
+      _ -> Nothing
 
 -- | Combinable conditions for Include and Exclude statements.
 data DesktopEntryCondition
@@ -216,7 +215,7 @@ parseLayout elt = case findChild (unqual "Layout") elt of
     parseLayoutItem e = case qName (elName e) of
       "Separator" -> Just XliSeparator
       "Filename" -> Just $ XliFile $ strContent e
-      unknown -> D.trace ("Unknown layout item: " ++ unknown) Nothing
+      _ -> Nothing
 
 -- | Determine whether a desktop entry fulfils a condition.
 matchesCondition :: DesktopEntry -> DesktopEntryCondition -> Bool
